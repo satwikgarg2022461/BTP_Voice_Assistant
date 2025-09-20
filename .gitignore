@@ -27,6 +27,8 @@ share/python-wheels/
 MANIFEST
 voice_recordings/
 models/
+data/
+ASR_text/
 
 
 # PyInstaller
