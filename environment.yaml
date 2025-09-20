@@ -176,6 +176,8 @@ dependencies:
       - protobuf==6.32.0
       - psutil==7.0.0
       - pvporcupine==3.0.5
+      - pvporcupinedemo==3.0.5
+      - pvrecorder==1.2.4
       - pydantic==2.11.7
       - pydantic-core==2.33.2
       - pygments==2.19.2
@@ -185,6 +187,7 @@ dependencies:
       - pysbd==0.3.4
       - python-crfsuite==0.9.11
       - python-dateutil==2.9.0.post0
+      - python-dotenv==1.1.1
       - pyttsx3==2.99
       - pytz==2025.2
       - pyyaml==6.0.2
@@ -193,12 +196,14 @@ dependencies:
       - requests==2.32.5
       - rich==14.1.0
       - safetensors==0.6.2
+      - samplerate==0.2.1
       - scikit-learn==1.7.1
       - scipy==1.11.4
       - shellingham==1.5.4
       - six==1.17.0
       - smart-open==7.3.0.post1
       - sniffio==1.3.1
+      - sounddevice==0.5.2
       - soxr==0.5.0.post1
       - spacy==3.8.7
       - spacy-legacy==3.0.12
