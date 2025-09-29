@@ -96,11 +96,26 @@ class RecipeChunker:
 
         return chunks
 
-    def export_recipes_csv(self, recipes: List[Dict], filename: str = "recipes.csv"):
+    def export_recipes_csv(self, recipes: List[Dict], filename: str = "recipes.csv", append: bool = False):
+        """
+        Export recipes to CSV file
+        
+        Args:
+            recipes: List of recipe dictionaries
+            filename: Output filename
+            append: If True, append to existing file. If False, create new file.
+        """
         path = os.path.join(self.output_dir, filename)
-        with open(path, mode="w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["recipe_id", "title", "region", "sub_region", "source", "url"])
-            writer.writeheader()
+        mode = "a" if append else "w"
+        
+        with open(path, mode=mode, newline="", encoding="utf-8") as f:
+            fieldnames = ["recipe_id", "title", "region", "sub_region", "source", "url"]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            
+            # Only write header if creating new file or file is empty
+            if not append or os.path.getsize(path) == 0:
+                writer.writeheader()
+                
             for r in recipes:
                 m = r["metadata"]
                 writer.writerow({
@@ -112,16 +127,28 @@ class RecipeChunker:
                     "url": m.get("url")
                 })
 
-    def export_chunks_csv(self, chunks: List[Dict], filename: str = "chunks.csv"):
+    def export_chunks_csv(self, chunks: List[Dict], filename: str = "chunks.csv", append: bool = False):
+        """
+        Export chunks to CSV file
+        
+        Args:
+            chunks: List of chunk dictionaries
+            filename: Output filename
+            append: If True, append to existing file. If False, create new file.
+        """
         path = os.path.join(self.output_dir, filename)
-        with open(path, mode="w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(
-                f,
-                fieldnames=[
-                    "recipe_id", "title", "chunk_index", "start_step",
-                    "end_step", "chunk_text", "searchable_text", "metadata"
-                ]
-            )
-            writer.writeheader()
+        mode = "a" if append else "w"
+        
+        with open(path, mode=mode, newline="", encoding="utf-8") as f:
+            fieldnames = [
+                "recipe_id", "title", "chunk_index", "start_step",
+                "end_step", "chunk_text", "searchable_text", "metadata"
+            ]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            
+            # Only write header if creating new file or file is empty
+            if not append or os.path.getsize(path) == 0:
+                writer.writeheader()
+                
             for c in chunks:
                 writer.writerow(c)
