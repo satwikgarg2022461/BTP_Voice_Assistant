@@ -75,7 +75,7 @@ def parse_and_normalize(text, recipe_id=None):
     }
 
     # Searchable text for embeddings
-    searchable = f"{normalized['title']}. ingredients: {', '.join(ingredients)}. instructions: {instructions}"
+    searchable = f"{normalized['title']}. ingredients: {', '.join(ingredients)}."
 
     return normalized, searchable
 
