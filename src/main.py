@@ -9,6 +9,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from modules.wakeword import WakeWordDetector
 from modules.vad import ShortRecorder
 from modules.asr import WhisperASR
+from modules.retriever import RecipeRetriever
 
 
 class VoiceAssistant:
@@ -17,8 +18,12 @@ class VoiceAssistant:
                  wake_sensitivity=0.65,
                  device_index=-1,
                  recordings_dir="voice_recordings",
-                 asr_model="base",
-                 asr_text_dir="ASR_text"):
+                 asr_model="small",
+                 asr_text_dir="ASR_text",
+                 db_path="recipes_demo.db",
+                 collection_name="recipes_collection",
+                 food_dict_path="data/food_dictionary.csv",
+                 fuzzy_score_cutoff=70):
         """
         Initialize the voice assistant that integrates wake word detection and VAD recording.
         
@@ -29,6 +34,10 @@ class VoiceAssistant:
             recordings_dir (str): Directory to save voice recordings
             asr_model (str): Whisper model size to use
             asr_text_dir (str): Directory to save transcription outputs
+            db_path (str): Path to the Milvus database
+            collection_name (str): Name of the Milvus collection
+            food_dict_path (str): Path to the food dictionary CSV file
+            fuzzy_score_cutoff (int): Minimum similarity score for fuzzy matching
         """
         print("Initializing Voice Assistant...")
         
@@ -59,6 +68,27 @@ class VoiceAssistant:
         # Initialize ASR
         self.asr = WhisperASR(model_size=asr_model)
         
+        # Initialize Recipe Retriever
+        self.retriever = RecipeRetriever(
+            db_path=db_path,
+            collection_name=collection_name
+        )
+        
+        # Set the fuzzy matching threshold
+        self.fuzzy_score_cutoff = fuzzy_score_cutoff
+        
+        # Load recipe terms from food dictionary
+        self.food_dict_path = food_dict_path
+        self.recipe_names = []
+        self.ingredients = []
+        
+        if os.path.exists(self.food_dict_path):
+            print(f"Loading recipe terms from {self.food_dict_path}...")
+            self.recipe_names, self.ingredients = self.asr.load_recipe_terms(self.food_dict_path)
+            print(f"Loaded {len(self.recipe_names)} recipe names and {len(self.ingredients)} ingredients for ASR correction")
+        else:
+            print(f"Warning: Food dictionary not found at {self.food_dict_path}")
+        
         print("Voice Assistant ready!")
 
     def on_wake_word(self, keyword_index, timestamp):
@@ -80,10 +110,29 @@ class VoiceAssistant:
             result = self.asr.transcribe_audio(audio_path)
             transcribed_text = result["text"]
             
-            # Display the transcription
-            print("\n--- Transcription Result ---")
+            # Display the original transcription
+            print("\n--- Original Transcription ---")
             print(transcribed_text)
-            print("---------------------------\n")
+            
+            # Apply text correction using phonetic matching + WRatio
+            if self.recipe_names or self.ingredients:
+                print("Applying phonetic + WRatio text correction...")
+                corrected_text = self.asr.correct_asr_text_phonetic(
+                    transcribed_text, 
+                    self.recipe_names, 
+                    self.ingredients, 
+                    self.fuzzy_score_cutoff
+                )
+                
+                # Display corrected transcription if different
+                if corrected_text != transcribed_text:
+                    print("\n--- Corrected Transcription ---")
+                    print(corrected_text)
+                    print("---------------------------\n")
+                    # Use corrected text for further processing
+                    transcribed_text = corrected_text
+                else:
+                    print("No corrections needed.")
             
             # Save transcription
             audio_filename = os.path.basename(audio_path)
@@ -95,8 +144,24 @@ class VoiceAssistant:
             )
             print(f"Transcription saved to: {output_path}")
             
+            # Search for recipes based on the transcription
+            print("Searching for recipes...")
+            recipe_results = self.retriever.search_recipes(transcribed_text, limit=3)
+            
+            # Display recipe results
+            if recipe_results:
+                print("\n--- Recipe Suggestions ---")
+                for i, recipe in enumerate(recipe_results, 1):
+                    print(f"Recipe {i}:")
+                    print(f"ID: {recipe['recipe_id']}")
+                    print(f"Relevance: {recipe['similarity']:.2f}")
+                    print(f"Preview: {recipe['text_preview']}")
+                    print("---")
+            else:
+                print("No matching recipes found.")
+            
         except Exception as e:
-            print(f"Error during transcription: {str(e)}")
+            print(f"Error during processing: {str(e)}")
         
     def run(self):
         """Run the voice assistant in continuous mode"""
