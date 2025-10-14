@@ -61,8 +61,8 @@ class VoiceAssistant:
             sample_rate=16000,
             frame_length=512,
             pre_roll_secs=1.0,
-            silence_thresh=900,
-            silence_duration=1.0
+            silence_thresh=500,
+            silence_duration=2.0
         )
         
         # Initialize ASR
