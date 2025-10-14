@@ -13,7 +13,7 @@ import jellyfish  # For phonetic matching
 
 # Define stopwords to ignore during correction
 STOPWORDS = {
-    "make",
+    "make", "please", "find", "show", "give", "tell", "cook", "recipe",
     "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "aren't", "as", "at", 
     "be", "because", "been", "before", "being", "below", "between", "both", "but", "by", 
     "can", "can't", "cannot", "could", "couldn't", 
@@ -73,7 +73,8 @@ class WhisperASR:
             
         print(f"Transcribing: {audio_file_path}")
         start_time = time.time()
-        result = self.model.transcribe(audio_file_path)
+        # Setting language='en' to force English-only transcription
+        result = self.model.transcribe(audio_file_path, language='en')
         transcription_time = time.time() - start_time
         print(f"Transcription completed in {transcription_time:.2f} seconds")
         
@@ -202,7 +203,7 @@ class WhisperASR:
                 # Then try matching against ingredients
                 if ingredients:
                     match = process.extractOne(word, ingredients, scorer=fuzz.ratio, score_cutoff=score_cutoff)
-                    print("ingredient",word, match)
+                    # print("ingredient",word, match)
                     if match:
                         corrected_words.append(match[0])
                         continue
@@ -252,7 +253,7 @@ class WhisperASR:
             for word in words:
                 # Skip correction for stopwords
                 if word.lower() in STOPWORDS:
-                    print(word,"skip")
+                    # print(word,"skip")
                     corrected_words.append(word)
                     continue
                     
