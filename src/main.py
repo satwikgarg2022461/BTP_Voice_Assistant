@@ -10,6 +10,8 @@ from modules.wakeword import WakeWordDetector
 from modules.vad import ShortRecorder
 from modules.asr import WhisperASR
 from modules.retriever import RecipeRetriever
+from modules.llm import RecipeLLM
+from modules.tts import RecipeTTS
 
 
 class VoiceAssistant:
@@ -73,6 +75,22 @@ class VoiceAssistant:
             db_path=db_path,
             collection_name=collection_name
         )
+        
+        # Initialize LLM for generating natural language responses
+        try:
+            self.llm = RecipeLLM()
+            print("LLM initialized successfully!")
+        except Exception as e:
+            print(f"Warning: Could not initialize LLM: {str(e)}")
+            self.llm = None
+        
+        # Initialize TTS for speech generation
+        try:
+            self.tts = RecipeTTS()
+            print("TTS initialized successfully!")
+        except Exception as e:
+            print(f"Warning: Could not initialize TTS: {str(e)}")
+            self.tts = None
         
         # Set the fuzzy matching threshold
         self.fuzzy_score_cutoff = fuzzy_score_cutoff
@@ -146,7 +164,7 @@ class VoiceAssistant:
             
             # Search for recipes based on the transcription
             print("Searching for recipes...")
-            recipe_results = self.retriever.search_recipes(transcribed_text, limit=3)
+            recipe_results = self.retriever.search_recipes(transcribed_text, limit=1)
             
             # Display recipe results
             if recipe_results:
@@ -157,8 +175,43 @@ class VoiceAssistant:
                     print(f"Relevance: {recipe['similarity']:.2f}")
                     print(f"Preview: {recipe['text_preview']}")
                     print("---")
+                
+                # Fetch full recipe details from API
+                print("\nFetching full recipe details...")
+                top_recipe_id = recipe_results[0]['recipe_id']
+                full_recipe = self.retriever.fetch_full_recipe_details(top_recipe_id)
+                
+                # If full recipe details are available, add them to results
+                if full_recipe:
+                    recipe_results[0].update(full_recipe)
+                    print(f"Full recipe details fetched for: {full_recipe.get('title', 'Unknown')}")
             else:
                 print("No matching recipes found.")
+            
+            # Generate natural language response using LLM
+            if self.llm:
+                print("\nGenerating natural language response...")
+                tts_response = self.llm.generate_recipe_response(transcribed_text, recipe_results)
+                print("\n--- LLM Response ---")
+                print(tts_response)
+                print("--------------------\n")
+                
+                # Generate speech from the response using TTS
+                if self.tts:
+                    print("Generating speech from recipe response...")
+                    audio_path = self.tts.generate_and_play_speech(
+                        tts_response,
+                        output_filename=f"recipe_{timestamp_str}.wav"
+                    )
+                    
+                    if audio_path:
+                        print(f"✓ Audio response saved to: {audio_path}")
+                    else:
+                        print("Failed to generate speech response")
+                else:
+                    print("TTS not available. Skipping speech generation.")
+            else:
+                print("LLM not available. Skipping response generation.")
             
         except Exception as e:
             print(f"Error during processing: {str(e)}")

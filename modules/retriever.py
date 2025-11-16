@@ -1,6 +1,9 @@
 from pymilvus import MilvusClient
 from sentence_transformers import SentenceTransformer
 import numpy as np
+import os
+import requests
+from dotenv import load_dotenv
 
 
 class RecipeRetriever:
@@ -20,6 +23,10 @@ class RecipeRetriever:
         # Load the embedding model
         self.model = SentenceTransformer(model_name)
         
+        # Load API base URL for fetching full recipe details
+        load_dotenv()
+        self.api_base_url = os.getenv("API_BASE_URL")
+        
         # Check if collection exists
         if not self.client.has_collection(collection_name=self.collection_name):
             print(f"Warning: Collection '{self.collection_name}' does not exist in the database.")
@@ -36,6 +43,87 @@ class RecipeRetriever:
         """
         embedding = self.model.encode(query_text, normalize_embeddings=True)
         return embedding.astype(np.float32).reshape(1, -1)
+    
+    def fetch_full_recipe_details(self, recipe_id):
+        """
+        Fetch complete recipe details from the API
+        
+        Args:
+            recipe_id (int): The recipe ID to fetch
+            
+        Returns:
+            dict: Full recipe details including ingredients and instructions, or None on error
+        """
+        try:
+            if not self.api_base_url:
+                print("Warning: API_BASE_URL not configured")
+                return None
+                
+            url = f"{self.api_base_url}/search-recipe/{recipe_id}"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            payload = data
+            recipe = {
+                "recipe_id": payload["recipe"].get("recipe_id"),
+                "title": payload["recipe"].get("recipe_title"),
+                "ingredients": [
+                    {
+                        "ingredient": ing.get("ingredient"),
+                        "state": ing.get("state"),
+                        "quantity": ing.get("quantity"),
+                        "unit": ing.get("unit"),
+                        "ndb_id": ing.get("ndb_id"),
+                    }
+                    for ing in payload.get("ingredients", [])
+                ],
+                "process_tags": payload["recipe"].get("processes", "").split("||"),
+                "metadata": {
+                    "region": payload["recipe"].get("region"),
+                    "sub_region": payload["recipe"].get("sub_region"),
+                    "source": payload["recipe"].get("source"),
+                    "url": payload["recipe"].get("url"),
+                    "img_url": payload["recipe"].get("img_url"),
+                    "nutritions": payload["recipe"].get("nutritions"),
+                    "diet_flags": payload["recipe"].get("diet_flags"),
+                }
+            }
+            
+            # Fetch instructions separately from the instructions endpoint
+            instructions = self.fetch_instructions(recipe_id)
+            recipe["instructions"] = instructions
+            
+            return recipe
+            
+        except Exception as e:
+            print(f"Error fetching full recipe details for ID {recipe_id}: {str(e)}")
+            return None
+    
+    def fetch_instructions(self, recipe_id):
+        """
+        Fetch cooking instructions for a given recipe ID.
+        
+        Args:
+            recipe_id (int): The recipe ID to fetch instructions for
+            
+        Returns:
+            list: List of instruction steps
+        """
+        try:
+            if not self.api_base_url:
+                print("Warning: API_BASE_URL not configured")
+                return []
+                
+            url = f"{self.api_base_url}/instructions/{recipe_id}"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("steps", [])
+            
+        except Exception as e:
+            print(f"Error fetching instructions for recipe ID {recipe_id}: {str(e)}")
+            return []
     
     def search_recipes(self, query_text, limit=5):
         """
@@ -64,10 +152,12 @@ class RecipeRetriever:
             formatted_results = []
             if results and len(results) > 0:
                 for hit in results[0]:
+                    full_text = hit["entity"]["text"]
                     formatted_results.append({
                         "recipe_id": hit["entity"]["recipe_id"],
                         "similarity": hit["distance"],  
-                        "text_preview": hit["entity"]["text"][:200] + "..." if len(hit["entity"]["text"]) > 200 else hit["entity"]["text"],
+                        "text_preview": full_text[:200] + "..." if len(full_text) > 200 else full_text,
+                        "full_text": full_text,
                         "vector_type": hit["entity"]["vector_type"]
                     })
             
