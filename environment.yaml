@@ -112,6 +112,7 @@ dependencies:
       - fsspec==2025.7.0
       - g2pkk==0.1.2
       - gensim==4.3.3
+      - google-genai==0.5.0
       - grpcio==1.74.0
       - gruut==2.2.3
       - gruut-ipa==0.13.0

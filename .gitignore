@@ -30,6 +30,7 @@ models/
 data/
 ASR_text/
 recipes_demo.db
+tts_generated_speech/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
