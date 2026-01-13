@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
+import argparse
 from datetime import datetime
 
 # Add the parent directory to sys.path
@@ -9,6 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from modules.wakeword import WakeWordDetector
 from modules.vad import ShortRecorder
 from modules.asr import WhisperASR
+from modules.deepgram_asr import DeepgramASR
 from modules.retriever import RecipeRetriever
 from modules.llm import RecipeLLM
 from modules.tts import RecipeTTS
@@ -20,6 +22,7 @@ class VoiceAssistant:
                  wake_sensitivity=0.65,
                  device_index=-1,
                  recordings_dir="voice_recordings",
+                 asr_type="local",
                  asr_model="small",
                  asr_text_dir="ASR_text",
                  db_path="recipes_demo.db",
@@ -34,7 +37,8 @@ class VoiceAssistant:
             wake_sensitivity (float): Wake word detection sensitivity
             device_index (int): Audio device index (-1 for default)
             recordings_dir (str): Directory to save voice recordings
-            asr_model (str): Whisper model size to use
+            asr_type (str): Type of ASR to use ('local' for Whisper or 'api' for Deepgram)
+            asr_model (str): Whisper model size to use (only for local ASR)
             asr_text_dir (str): Directory to save transcription outputs
             db_path (str): Path to the Milvus database
             collection_name (str): Name of the Milvus collection
@@ -43,6 +47,9 @@ class VoiceAssistant:
         """
         print("Initializing Voice Assistant...")
         
+        # Store ASR type
+        self.asr_type = asr_type
+
         # Create recordings directory if it doesn't exist
         self.recordings_dir = recordings_dir
         os.makedirs(self.recordings_dir, exist_ok=True)
@@ -67,9 +74,18 @@ class VoiceAssistant:
             silence_duration=2.0
         )
         
-        # Initialize ASR
-        self.asr = WhisperASR(model_size=asr_model)
-        
+        # Initialize ASR based on type
+        if asr_type.lower() == "api":
+            print("Using Deepgram API for ASR...")
+            self.asr = DeepgramASR()
+            # Note: Deepgram ASR doesn't support local text correction methods
+            # We'll need to use WhisperASR methods for correction
+            self.asr_corrector = WhisperASR(model_size="base")  # Lightweight model just for correction utilities
+        else:
+            print("Using local Whisper for ASR...")
+            self.asr = WhisperASR(model_size=asr_model)
+            self.asr_corrector = self.asr  # Same object for local ASR
+
         # Initialize Recipe Retriever
         self.retriever = RecipeRetriever(
             db_path=db_path,
@@ -102,7 +118,7 @@ class VoiceAssistant:
         
         if os.path.exists(self.food_dict_path):
             print(f"Loading recipe terms from {self.food_dict_path}...")
-            self.recipe_names, self.ingredients = self.asr.load_recipe_terms(self.food_dict_path)
+            self.recipe_names, self.ingredients = self.asr_corrector.load_recipe_terms(self.food_dict_path)
             print(f"Loaded {len(self.recipe_names)} recipe names and {len(self.ingredients)} ingredients for ASR correction")
         else:
             print(f"Warning: Food dictionary not found at {self.food_dict_path}")
@@ -135,8 +151,8 @@ class VoiceAssistant:
             # Apply text correction using phonetic matching + WRatio
             if self.recipe_names or self.ingredients:
                 print("Applying phonetic + WRatio text correction...")
-                corrected_text = self.asr.correct_asr_text_phonetic(
-                    transcribed_text, 
+                corrected_text = self.asr_corrector.correct_asr_text_phonetic(
+                    transcribed_text,
                     self.recipe_names, 
                     self.ingredients, 
                     self.fuzzy_score_cutoff
@@ -233,5 +249,44 @@ class VoiceAssistant:
 
 
 if __name__ == "__main__":
-    assistant = VoiceAssistant()
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description="Voice Assistant for Recipe Queries")
+
+    # Create mutually exclusive group for ASR type
+    asr_group = parser.add_mutually_exclusive_group()
+    asr_group.add_argument(
+        "--asr-local",
+        action="store_const",
+        const="local",
+        dest="asr_type",
+        help="Use local Whisper model for ASR (default)"
+    )
+    asr_group.add_argument(
+        "--asr-api",
+        action="store_const",
+        const="api",
+        dest="asr_type",
+        help="Use Deepgram API for ASR"
+    )
+
+    # Additional options
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="small",
+        choices=["tiny", "base", "small", "medium", "large"],
+        help="Whisper model size for local ASR (default: small)"
+    )
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Default to local if no ASR type specified
+    asr_type = args.asr_type if args.asr_type else "local"
+
+    # Create and run assistant with specified ASR type
+    assistant = VoiceAssistant(
+        asr_type=asr_type,
+        asr_model=args.model
+    )
     assistant.run()
