@@ -1,90 +1,122 @@
 import re
-import math
 import numpy as np
 import pandas as pd
-from collections import Counter
 from sentence_transformers import SentenceTransformer
 from pymilvus import MilvusClient
 
-# ---------- basic helpers ----------
-def tokenize(text):
-    # simple tokenization: words only (keeps dungeness, crab, green_chile as tokens)
-    return re.findall(r"\w+", text.lower())
 
-def extract_ingredients(text):
-    # tries to parse text like "... ingredients: turmeric, xx, yy instructions: rub ..."
-    m = re.search(r"ingredients:(.*?)(instructions:|$)", text.lower(), re.DOTALL)
-    if m:
-        return m.group(1)
-    # fallback: no ingredients: label -> try short heuristic (first portion of text)
-    return text[:200]
+class RecipeEmbeddings:
+    """Class to handle recipe embeddings and vector database operations."""
 
-# a small stoplist (optional)
-STOPWORDS = set(["and", "or", "the", "a", "an", "with", "of", "to", "in", "on", "for", "by", "as", "is", "are", "be", "from"])
+    def __init__(self, db_path="recipes_demo.db", collection_name="recipes_collection"):
+        """Initialize the embeddings generator with model and database."""
+        self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.dim = self.model.get_sentence_embedding_dimension()
+        self.db_path = db_path
+        self.collection_name = collection_name
+        self.client = None
 
-# ---------- load stuff ----------
-df = pd.read_csv("data/searchable_text_for_embeddings.csv")
-model = SentenceTransformer('all-MiniLM-L6-v2')  # Using a standard pre-trained model
-dim = model.get_sentence_embedding_dimension()  # Usually 384 for this model
+    def tokenize(self, text):
+        """Simple tokenization: words only."""
+        return re.findall(r"\w+", text.lower())
 
-# ---------- embedding functions ----------
-def get_embedding(text):
-    # Get standard embedding from sentence transformer
-    embedding = model.encode(text, normalize_embeddings=True)
-    return embedding.astype(np.float32)
+    def extract_ingredients(self, text):
+        """Extract ingredients section from text."""
+        m = re.search(r"ingredients:(.*?)(instructions:|$)", text.lower(), re.DOTALL)
+        if m:
+            return m.group(1)
+        # fallback: no ingredients label -> try short heuristic (first portion of text)
+        return text[:200]
 
-# ---------- prepare Milvus client and collection ----------
-client = MilvusClient("recipes_demo.db")
-collection_name = "recipes_collection"
+    def get_embedding(self, text):
+        """Get standard embedding from sentence transformer."""
+        embedding = self.model.encode(text, normalize_embeddings=True)
+        return embedding.astype(np.float32)
 
-if client.has_collection(collection_name=collection_name):
-    client.drop_collection(collection_name=collection_name)
+    def initialize_database(self):
+        """Initialize Milvus client and create collection."""
+        self.client = MilvusClient(self.db_path)
 
-client.create_collection(collection_name=collection_name, dimension=dim)
+        # Drop existing collection if it exists
+        if self.client.has_collection(collection_name=self.collection_name):
+            self.client.drop_collection(collection_name=self.collection_name)
 
-# ---------- build & insert: one vector per recipe ----------
-entities = []
-global_id = 0  # unique primary key for each vector row
+        # Create new collection
+        self.client.create_collection(collection_name=self.collection_name, dimension=self.dim)
+        print(f"Created collection '{self.collection_name}' with dimension {self.dim}")
 
-for _, row in df.iterrows():
-    rid = int(row["recipe_id"])
-    text = str(row["searchable_text"])
+    def create_embeddings(self, input_csv="data/searchable_text_for_embeddings.csv"):
+        """Create embeddings and insert into vector database."""
+        print("\n" + "="*60)
+        print("STEP 4: Creating Embeddings & Building Vector Database")
+        print("="*60)
 
-    # Get full text embedding only
-    full_emb = get_embedding(text)
+        # Load data
+        df = pd.read_csv(input_csv)
+        print(f"Loaded {len(df)} recipes from {input_csv}")
 
-    # Insert one row per recipe with full embedding
-    entities.append({
-        "id": global_id,
-        "vector": full_emb.tolist(),
-        "text": text,
-        "recipe_id": rid,
-        "vector_type": "full"
-    })
-    global_id += 1
+        # Initialize database
+        self.initialize_database()
 
-# bulk insert
-res = client.insert(collection_name=collection_name, data=entities)
-print("insert result:", res)
+        # Build and insert embeddings
+        entities = []
+        global_id = 0
 
-# ---------- searching ----------
-def embed_query(query_text):
-    return get_embedding(query_text).reshape(1, -1)
+        for _, row in df.iterrows():
+            rid = int(row["recipe_id"])
+            text = str(row["searchable_text"])
 
-query_text = "I have ingredient like tiger prawn ounces. What to make"
-q_vec = embed_query(query_text)
+            # Get full text embedding
+            full_emb = self.get_embedding(text)
 
-res = client.search(
-    collection_name=collection_name,
-    data=q_vec,
-    limit=10,
-    output_fields=["text", "recipe_id", "vector_type"]
-)
-print('\n')
-print('\n')
-print('\n')
-# print top results
-for hit in res[0]:
-    print("recipe_id:", hit["entity"]["recipe_id"], "vector_type:", hit["entity"]["vector_type"], "distance:", hit["distance"])
-    print(hit["entity"]["text"][:200], "...")
-    print("----")
+            # Insert one row per recipe with full embedding
+            entities.append({
+                "id": global_id,
+                "vector": full_emb.tolist(),
+                "text": text,
+                "recipe_id": rid,
+                "vector_type": "full"
+            })
+            global_id += 1
+
+        # Bulk insert
+        res = self.client.insert(collection_name=self.collection_name, data=entities)
+        print(f"✅ Inserted {len(entities)} embeddings into vector database")
+        print(f"→ Database saved to {self.db_path}")
+        print("="*60 + "\n")
+
+        return res
+
+    def search(self, query_text, limit=10):
+        """Search for similar recipes using query text."""
+        if self.client is None:
+            self.client = MilvusClient(self.db_path)
+
+        q_vec = self.get_embedding(query_text).reshape(1, -1)
+
+        res = self.client.search(
+            collection_name=self.collection_name,
+            data=q_vec,
+            limit=limit,
+            output_fields=["text", "recipe_id", "vector_type"]
+        )
+
+        return res
+
+
+if __name__ == "__main__":
+    embeddings = RecipeEmbeddings()
+    embeddings.create_embeddings()
+
+    # Test search
+    print("\n" + "="*60)
+    print("Testing Search")
+    print("="*60)
+    query_text = "I have ingredient like tiger prawn ounces. What to make"
+    results = embeddings.search(query_text, limit=10)
+
+    print(f"\nQuery: {query_text}\n")
+    for hit in results[0]:
+        print(f"Recipe ID: {hit['entity']['recipe_id']}, Vector Type: {hit['entity']['vector_type']}, Distance: {hit['distance']}")
+        print(f"{hit['entity']['text'][:200]}...")
+        print("----")
