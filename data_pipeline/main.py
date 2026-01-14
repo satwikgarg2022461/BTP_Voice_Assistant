@@ -2,16 +2,42 @@ import os
 import time
 from api_call import RecipeAPI
 from chunker import RecipeChunker
+from normalizer import RecipeNormalizer
+from food_dictionary import FoodDictionary
+from embeddings import RecipeEmbeddings
 
 
 def main():
+    """
+    Complete data pipeline:
+    STEP 1: Fetch recipes from API and create chunks
+    STEP 2: Normalize recipes
+    STEP 3: Create food dictionary
+    STEP 4: Create embeddings and build vector database
+    """
+
+    # Initialize all pipeline components
     api = RecipeAPI()
     chunker = RecipeChunker()
-    
-    # Files for incremental saving
+    normalizer = RecipeNormalizer()
+    food_dict = FoodDictionary()
+    embeddings = RecipeEmbeddings()
+
+    # Files for the pipeline
     recipes_csv = "recipes.csv"
     chunks_csv = "chunks.csv"
-    
+    searchable_csv = "searchable_text_for_embeddings.csv"
+    food_dict_csv = "food_dictionary.csv"
+
+    print("\n" + "="*60)
+    print("STARTING RECIPE DATA PIPELINE")
+    print("="*60 + "\n")
+
+    # ==================== STEP 1: Fetch Recipes ====================
+    print("="*60)
+    print("STEP 1: Fetching Recipes from API")
+    print("="*60)
+
     # Check if files already exist to determine if we're resuming
     resuming = os.path.exists(os.path.join(chunker.output_dir, recipes_csv))
     
@@ -114,9 +140,50 @@ def main():
             # Continue with next recipe on error
             
     total_time = time.time() - start_time
-    print(f"\n✅ Completed in {int(total_time//60):02d}:{int(total_time%60):02d}")
-    print(f"✅ Processed {processed_count + len(current_batch_recipes)} recipes")
-    print(f"✅ All data saved to {chunker.output_dir}/{recipes_csv} and {chunker.output_dir}/{chunks_csv}")
+    print(f"\n✅ STEP 1 Completed in {int(total_time//60):02d}:{int(total_time%60):02d}")
+    print(f"✅ Processed {total_recipes} recipes")
+    print(f"✅ Data saved to {chunker.output_dir}/{recipes_csv} and {chunker.output_dir}/{chunks_csv}")
+    print("="*60 + "\n")
+
+    # ==================== STEP 2: Normalize Recipes ====================
+    try:
+        normalizer.process_recipes(
+            input_csv=os.path.join(chunker.output_dir, chunks_csv),
+            output_csv=os.path.join(chunker.output_dir, searchable_csv)
+        )
+    except Exception as e:
+        print(f"❌ Error in normalization: {str(e)}")
+        raise
+
+    # ==================== STEP 3: Create Food Dictionary ====================
+    try:
+        food_dict.create_food_dictionary(
+            input_csv=os.path.join(chunker.output_dir, searchable_csv),
+            output_csv=os.path.join(chunker.output_dir, food_dict_csv)
+        )
+    except Exception as e:
+        print(f"❌ Error creating food dictionary: {str(e)}")
+        raise
+
+    # ==================== STEP 4: Create Embeddings ====================
+    try:
+        embeddings.create_embeddings(
+            input_csv=os.path.join(chunker.output_dir, searchable_csv)
+        )
+    except Exception as e:
+        print(f"❌ Error creating embeddings: {str(e)}")
+        raise
+
+    # ==================== Pipeline Complete ====================
+    print("\n" + "="*60)
+    print("🎉 PIPELINE COMPLETE!")
+    print("="*60)
+    print(f"✅ Recipes CSV: {chunker.output_dir}/{recipes_csv}")
+    print(f"✅ Chunks CSV: {chunker.output_dir}/{chunks_csv}")
+    print(f"✅ Searchable Text CSV: {chunker.output_dir}/{searchable_csv}")
+    print(f"✅ Food Dictionary CSV: {chunker.output_dir}/{food_dict_csv}")
+    print(f"✅ Vector Database: recipes_demo.db")
+    print("="*60 + "\n")
 
 
 if __name__ == "__main__":
