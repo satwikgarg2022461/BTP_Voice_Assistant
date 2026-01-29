@@ -36,6 +36,23 @@ class IntentClassifier:
     3. Return intent + confidence + extracted entities
     """
 
+    # Confidence constants for pattern matching
+    CONFIDENCE_VERY_HIGH = 0.95
+    CONFIDENCE_HIGH = 0.90
+    CONFIDENCE_MEDIUM_HIGH = 0.85
+    CONFIDENCE_MEDIUM = 0.80
+    CONFIDENCE_MEDIUM_LOW = 0.75
+    CONFIDENCE_LOW = 0.70
+
+    # Confidence boosts for context
+    CONTEXT_BOOST_SMALL = 0.05
+    CONTEXT_BOOST_MEDIUM = 0.10
+    CONTEXT_BOOST_LARGE = 0.15
+
+    # LLM fallback confidence defaults
+    LLM_DEFAULT_CONFIDENCE = 0.50
+    LLM_ERROR_CONFIDENCE = 0.30
+
     def __init__(self, confidence_threshold=0.7, use_llm_fallback=True):
         """
         Initialize the Intent Classifier
@@ -72,77 +89,77 @@ class IntentClassifier:
         """
         return {
             Intent.NAV_NEXT: [
-                {"pattern": r"\b(next|continue|forward|proceed|go ahead|move on)\b", "confidence": 0.95},
-                {"pattern": r"\b(what'?s next|after that|then what)\b", "confidence": 0.9},
-                {"pattern": r"\b(skip|move forward)\b", "confidence": 0.85},
+                {"pattern": r"\b(next|continue|forward|proceed|go ahead|move on)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(what'?s next|after that|then what)\b", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(skip|move forward)\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
             ],
             Intent.NAV_PREV: [
-                {"pattern": r"\b(previous|back|before|earlier|go back|last step)\b", "confidence": 0.95},
-                {"pattern": r"\b(what was (that|the last)|can you repeat|say that again)\b", "confidence": 0.85},
-                {"pattern": r"\b(undo|rewind)\b", "confidence": 0.8},
+                {"pattern": r"\b(previous|back|before|earlier|go back|last step)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(what was (that|the last)|can you repeat|say that again)\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
+                {"pattern": r"\b(undo|rewind)\b", "confidence": self.CONFIDENCE_MEDIUM},
             ],
             Intent.NAV_GO_TO: [
-                {"pattern": r"\b(go to|jump to|skip to) (step|ingredient)?\s*(\d+|first|last|beginning|end)\b", "confidence": 0.95},
-                {"pattern": r"\b(step|ingredient)?\s*(\d+|first|last)\b", "confidence": 0.7},
+                {"pattern": r"\b(go to|jump to|skip to) (step|ingredient)?\s*(\d+|first|last|beginning|end)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(step|ingredient)?\s*(\d+|first|last)\b", "confidence": self.CONFIDENCE_LOW},
             ],
             Intent.NAV_START: [
-                {"pattern": r"\b(repeat|start|begin).*(from )?(the )?(beginning|start|top|starting)\b", "confidence": 0.95},
-                {"pattern": r"\b(start|begin|let'?s (start|begin|go)|show me how)\b", "confidence": 0.95},
-                {"pattern": r"\b(from the (beginning|start|top)|take me through)\b", "confidence": 0.9},
-                {"pattern": r"\b(restart|start over|begin again)\b", "confidence": 0.95},
+                {"pattern": r"\b(repeat|start|begin).*(from )?(the )?(beginning|start|top|starting)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(start|begin|let'?s (start|begin|go)|show me how)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(from the (beginning|start|top)|take me through)\b", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(restart|start over|begin again)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
             ],
             Intent.NAV_REPEAT: [
-                {"pattern": r"\b(repeat|say (that|it) again|one more time|again|pardon)(?!.*(beginning|start|top|starting))\b", "confidence": 0.95},
-                {"pattern": r"\b(what did you say|didn'?t (catch|hear) that)\b", "confidence": 0.9},
-                {"pattern": r"\b(come again|excuse me)\b", "confidence": 0.75},
+                {"pattern": r"\b(repeat|say (that|it) again|one more time|again|pardon)(?!.*(beginning|start|top|starting))\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(what did you say|didn'?t (catch|hear) that)\b", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(come again|excuse me)\b", "confidence": self.CONFIDENCE_MEDIUM_LOW},
             ],
             Intent.SMALL_TALK: [
-                {"pattern": r"\b(hi|hello|hey|good (morning|afternoon|evening)|greetings)\b", "confidence": 0.95},
-                {"pattern": r"\b(how are you|how'?re you|how are u|how r u|how'?s it going|what'?s up)\b", "confidence": 0.95},
-                {"pattern": r"\b(thanks|thank you|bye|goodbye|see you|take care)\b", "confidence": 0.95},
-                {"pattern": r"\b(nice|great|awesome|cool|good job|well done)\b$", "confidence": 0.9},
-                {"pattern": r"\b(weather|how'?s your day|doing today|feeling)\b", "confidence": 0.85},
+                {"pattern": r"\b(hi|hello|hey|good (morning|afternoon|evening)|greetings)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(how are you|how'?re you|how are u|how r u|how'?s it going|what'?s up)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(thanks|thank you|bye|goodbye|see you|take care)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(nice|great|awesome|cool|good job|well done)\b$", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(weather|how'?s your day|doing today|feeling)\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
             ],
             Intent.QUESTION: [
-                {"pattern": r"\b(substitute|replace|alternative|instead of|swap)\b", "confidence": 0.9},
-                {"pattern": r"\b(how much|how many|how long|what temperature|what time)\b", "confidence": 0.95},
-                {"pattern": r"\b(why|when|where|which)\b.*(step|ingredient|recipe|cook|add|mix|heat)\b", "confidence": 0.85},
-                {"pattern": r"\b(what|how).*(temperature|time|long|much|many|ingredient|substitute)\b", "confidence": 0.85},
-                {"pattern": r"\b(can i|could i|should i|is it okay).*(use|add|replace|skip)\b", "confidence": 0.9},
-                {"pattern": r"\b(tell me (about|more)|explain|describe).*(recipe|step|ingredient|process)\b", "confidence": 0.85},
+                {"pattern": r"\b(substitute|replace|alternative|instead of|swap)\b", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(how much|how many|how long|what temperature|what time)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(why|when|where|which)\b.*(step|ingredient|recipe|cook|add|mix|heat)\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
+                {"pattern": r"\b(what|how).*(temperature|time|long|much|many|ingredient|substitute)\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
+                {"pattern": r"\b(can i|could i|should i|is it okay).*(use|add|replace|skip)\b", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(tell me (about|more)|explain|describe).*(recipe|step|ingredient|process)\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
             ],
             Intent.SEARCH_RECIPE: [
-                {"pattern": r"\b(find|search|look for|show me|give me|i want|i need) (a |some |the )?(recipe|dish)\b", "confidence": 0.95},
-                {"pattern": r"\b(how (do|to) (make|cook|prepare)|recipe for)\b", "confidence": 0.9},
-                {"pattern": r"\b(cook|make|prepare)\s+\w+", "confidence": 0.7},
+                {"pattern": r"\b(find|search|look for|show me|give me|i want|i need) (a |some |the )?(recipe|dish)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(how (do|to) (make|cook|prepare)|recipe for)\b", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(cook|make|prepare)\s+\w+", "confidence": self.CONFIDENCE_LOW},
             ],
             Intent.START_RECIPE: [
-                {"pattern": r"\b(start|begin|let'?s (do|make|cook)) (this|that|it|the recipe)\b", "confidence": 0.95},
-                {"pattern": r"\b(okay let'?s go|let'?s start cooking|ready to cook)\b", "confidence": 0.9},
-                {"pattern": r"\b(show me (the |how to )?steps|walk me through)\b", "confidence": 0.85},
+                {"pattern": r"\b(start|begin|let'?s (do|make|cook)) (this|that|it|the recipe)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(okay let'?s go|let'?s start cooking|ready to cook)\b", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(show me (the |how to )?steps|walk me through)\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
             ],
             Intent.STOP_PAUSE: [
-                {"pattern": r"\b(stop|pause|wait|hold on|hang on)\b", "confidence": 0.95},
-                {"pattern": r"\b(just a (second|minute|moment)|give me a (second|minute))\b", "confidence": 0.9},
-                {"pattern": r"\b(cancel|never mind|stop reading)\b", "confidence": 0.85},
+                {"pattern": r"\b(stop|pause|wait|hold on|hang on)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(just a (second|minute|moment)|give me a (second|minute))\b", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(cancel|never mind|stop reading)\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
             ],
             Intent.RESUME: [
-                {"pattern": r"\b(resume|continue|go on|keep going|carry on)\b", "confidence": 0.95},
-                {"pattern": r"\b(okay (continue|go ahead)|i'?m back|ready now)\b", "confidence": 0.9},
+                {"pattern": r"\b(resume|continue|go on|keep going|carry on)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(okay (continue|go ahead)|i'?m back|ready now)\b", "confidence": self.CONFIDENCE_HIGH},
             ],
             Intent.CONFIRM: [
-                {"pattern": r"\b(yes|yeah|yep|sure|okay|ok|alright|correct|right|exactly)\b$", "confidence": 0.95},
-                {"pattern": r"\b(that'?s (right|correct)|sounds good|go ahead)\b", "confidence": 0.9},
-                {"pattern": r"\b(affirmative|indeed|absolutely)\b", "confidence": 0.85},
+                {"pattern": r"\b(yes|yeah|yep|sure|okay|ok|alright|correct|right|exactly)\b$", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(that'?s (right|correct)|sounds good|go ahead)\b", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(affirmative|indeed|absolutely)\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
             ],
             Intent.CANCEL: [
-                {"pattern": r"\b(no|nope|nah|cancel|stop|don'?t|never mind)\b", "confidence": 0.95},
-                {"pattern": r"\b(not (really|now)|maybe later|skip (it|this))\b", "confidence": 0.85},
+                {"pattern": r"\b(no|nope|nah|cancel|stop|don'?t|never mind)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(not (really|now)|maybe later|skip (it|this))\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
             ],
             Intent.HELP: [
-                {"pattern": r"\b(help|assist|support|what can you do|commands)\b", "confidence": 0.95},
-                {"pattern": r"\b(how (do|does) (this|it) work|instructions|guide)\b", "confidence": 0.9},
-                {"pattern": r"\b(i'?m (lost|confused|stuck)|don'?t understand)\b", "confidence": 0.85},
+                {"pattern": r"\b(help|assist|support|what can you do|commands)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(how (do|does) (this|it) work|instructions|guide)\b", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(i'?m (lost|confused|stuck)|don'?t understand)\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
             ],
         }
 
@@ -295,22 +312,22 @@ class IntentClassifier:
         # Boost navigation intents when in active recipe
         if intent in [Intent.NAV_NEXT, Intent.NAV_PREV, Intent.NAV_REPEAT, Intent.NAV_GO_TO]:
             if current_state in ["READING_INGREDIENTS", "READING_STEPS", "RECIPE_ACTIVE"]:
-                confidence = min(1.0, confidence + 0.1)
+                confidence = min(1.0, confidence + self.CONTEXT_BOOST_MEDIUM)
 
         # Boost START_RECIPE when recipe is selected
         if intent == Intent.START_RECIPE:
             if current_state == "RECIPE_SELECTED":
-                confidence = min(1.0, confidence + 0.15)
+                confidence = min(1.0, confidence + self.CONTEXT_BOOST_LARGE)
 
         # Boost RESUME when paused
         if intent == Intent.RESUME:
             if context.get("paused") == "true" or current_state == "PAUSED":
-                confidence = min(1.0, confidence + 0.15)
+                confidence = min(1.0, confidence + self.CONTEXT_BOOST_LARGE)
 
         # Boost QUESTION when in active recipe
         if intent == Intent.QUESTION:
             if current_state in ["READING_INGREDIENTS", "READING_STEPS", "RECIPE_ACTIVE"]:
-                confidence = min(1.0, confidence + 0.05)
+                confidence = min(1.0, confidence + self.CONTEXT_BOOST_SMALL)
 
         return confidence
 
@@ -404,14 +421,14 @@ Extract relevant entities (e.g., step numbers, recipe names, question text) in t
             except ValueError:
                 intent = Intent.UNKNOWN
 
-            confidence = float(result.get("confidence", 0.5))
+            confidence = float(result.get("confidence", self.LLM_DEFAULT_CONFIDENCE))
             entities = result.get("entities", {})
 
             return intent, confidence, entities
 
         except Exception as e:
             print(f"Error in LLM classification: {str(e)}")
-            return Intent.UNKNOWN, 0.3, {}
+            return Intent.UNKNOWN, self.LLM_ERROR_CONFIDENCE, {}
 
     def get_intent_description(self, intent: Intent) -> str:
         """
