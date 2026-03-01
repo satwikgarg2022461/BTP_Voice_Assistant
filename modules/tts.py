@@ -154,83 +154,90 @@ class RecipeTTS:
 
     def generate_and_play_speech(self, text, output_filename=None):
         """
-        Generate speech and optionally play it using system audio player
-        
+        Generate speech and play it using the controllable AudioPlayer.
+
+        Replaces the old subprocess.Popen approach with pygame.mixer so that
+        playback can be paused, resumed, or stopped at any time.
+
         Args:
-            text (str): The text to convert to speech
-            output_filename (str, optional): Custom filename for the output audio
-            
+            text (str): The text to convert to speech.
+            output_filename (str, optional): Custom filename for the output audio.
+
         Returns:
-            str: Path to the saved audio file, or None on error
+            tuple[str | None, AudioPlayer | None]:
+                (path_to_audio_file, audio_player_instance)
+                The caller keeps a reference to the AudioPlayer to pause/stop later.
+                Returns (None, None) on error.
         """
-        # First generate the speech
+        from modules.audio_player import AudioPlayer  # lazy import to avoid circular deps
+
         audio_path = self.generate_speech(text, output_filename)
-        
-        if audio_path:
-            # Try to play the audio using system player
-            try:
-                import subprocess
-                # Use common audio players available on Linux
-                players = ['mpv', 'ffplay', 'paplay', 'aplay']
-                
-                for player in players:
-                    try:
-                        subprocess.Popen([player, audio_path], 
-                                       stdout=subprocess.DEVNULL, 
-                                       stderr=subprocess.DEVNULL)
-                        print(f"Playing audio with {player}...")
-                        return audio_path
-                    except FileNotFoundError:
-                        continue
-                
-                # If no player found, just return the path
-                print(f"Audio file ready at: {audio_path}")
-                print("(No audio player found. Please play the file manually.)")
-                return audio_path
-                
-            except Exception as e:
-                print(f"Could not play audio: {str(e)}")
-                print(f"Audio file saved at: {audio_path}")
-                return audio_path
-        
-        return None
 
-    def split_into_sentences(self, text: str, max_length: int = 200) -> List[str]:
+        if not audio_path:
+            return None, None
+
+        try:
+            player = AudioPlayer()
+            player.play(audio_path)
+            print(f"▶  Playing audio via AudioPlayer: {audio_path}")
+            return audio_path, player
+        except Exception as e:
+            print(f"Could not play audio: {str(e)}")
+            print(f"Audio file saved at: {audio_path}")
+            return audio_path, None
+
+    def split_into_sentences(self, text: str, max_length: int = 600) -> List[str]:
         """
-        Split text into sentences for chunked TTS processing
+        Split text into sentences for chunked TTS processing.
+
+        Strategy
+        --------
+        1. Split ONLY on genuine sentence-ending punctuation (. ! ?)
+           followed by whitespace + capital letter, or at end of string.
+           Commas, semicolons, and the word "and" are intentionally NOT
+           used as split points — they occur inside ingredient lists and
+           step descriptions and must stay together for natural TTS output.
+
+        2. For sentences that still exceed max_length after step 1,
+           split only on ". " (mid-sentence period+space) as a last resort.
+           Never split on commas or conjunctions.
 
         Args:
-            text (str): Text to split
-            max_length (int): Maximum length for a sentence chunk (will split long sentences)
+            text (str): Full text to convert to speech.
+            max_length (int): Max chars per chunk before hard-splitting
+                              on ". " boundaries (default 600).
 
         Returns:
-            List[str]: List of sentence chunks
+            List[str]: Sentence chunks, each short enough for one TTS call.
         """
         if not text or not text.strip():
             return []
 
-        # First, split by common sentence boundaries
-        # This regex handles: . ! ? followed by space or newline, but not decimals like 3.5
-        sentence_endings = re.compile(r'(?<=[.!?])\s+(?=[A-Z])|(?<=[.!?])$|\n+')
+        # Primary split: sentence-ending punctuation + whitespace + Capital letter
+        # Also split on newlines. Does NOT split on commas, semicolons, or "and".
+        sentence_endings = re.compile(
+            r'(?<=[.!?])\s+(?=[A-Z])'   # ". Next sentence"
+            r'|(?<=[.!?])\s*$'           # trailing punctuation
+            r'|\n+'                       # newlines
+        )
 
-        # Split text
         raw_sentences = sentence_endings.split(text.strip())
 
-        # Filter out empty strings and clean up
         sentences = []
         for sentence in raw_sentences:
             sentence = sentence.strip()
-            if sentence:
-                # If sentence is too long, split it further
-                if len(sentence) > max_length:
-                    # Split by commas, semicolons, or conjunctions
-                    sub_chunks = re.split(r'[,;]|\s+(?:and|or|but)\s+', sentence)
-                    for chunk in sub_chunks:
-                        chunk = chunk.strip()
-                        if chunk:
-                            sentences.append(chunk)
-                else:
-                    sentences.append(sentence)
+            if not sentence:
+                continue
+
+            if len(sentence) <= max_length:
+                sentences.append(sentence)
+            else:
+                # Hard-split on "; " or " - " as last resort only
+                sub_chunks = re.split(r';\s+', sentence)
+                for chunk in sub_chunks:
+                    chunk = chunk.strip()
+                    if chunk:
+                        sentences.append(chunk)
 
         return sentences
 

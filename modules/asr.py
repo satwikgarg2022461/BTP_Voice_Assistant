@@ -11,31 +11,84 @@ import string
 import jellyfish  # For phonetic matching
 
 
-# Define stopwords to ignore during correction
+# Define stopwords to ignore during correction.
+# These words must NEVER be replaced by fuzzy/phonetic matching because:
+#   (a) they are function/navigation words whose exact form matters for intent classification, OR
+#   (b) they are so short/common that phonetic matching produces wrong food-term substitutions.
 STOPWORDS = {
-    "make", "please", "find", "show", "give", "tell", "cook", "recipe",
-    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "aren't", "as", "at", 
-    "be", "because", "been", "before", "being", "below", "between", "both", "but", "by", 
-    "can", "can't", "cannot", "could", "couldn't", 
-    "did", "didn't", "do", "does", "doesn't", "doing", "don't", "down", "during", 
-    "each", 
-    "few", "for", "from", "further", 
-    "had", "hadn't", "has", "hasn't", "have", "haven't", "having", "he", "he'd", "he'll", "he's", "her", "here", "here's", 
-    "hers", "herself", "him", "himself", "his", "how", "how's", 
-    "i", "i'd", "i'll", "i'm", "i've", "if", "in", "into", "is", "isn't", "it", "it's", "its", "itself", 
+    # ── English function words ────────────────────────────────────────────────
+    "a", "about", "above", "after", "again", "against", "all", "am", "an",
+    "and", "any", "are", "aren't", "as", "at",
+    "be", "because", "been", "before", "being", "below", "between", "both",
+    "but", "by",
+    "can", "can't", "cannot", "could", "couldn't",
+    "did", "didn't", "do", "does", "doesn't", "doing", "don't", "down", "during",
+    "each",
+    "few", "for", "from", "further",
+    "had", "hadn't", "has", "hasn't", "have", "haven't", "having",
+    "he", "he'd", "he'll", "he's", "her", "here", "here's", "hers", "herself",
+    "him", "himself", "his", "how", "how's",
+    "i", "i'd", "i'll", "i'm", "i've", "if", "in", "into", "is", "isn't",
+    "it", "it's", "its", "itself",
     "let's", "it?",
-    "make", "me", "more", "most", "mustn't", "my", "myself", "make",
-    "no", "nor", "not", "now", 
-    "of", "off", "on", "once", "only", "or", "other", "ought", "our", "ours", "ourselves", "out", "over", "own", 
-    "same", "shall", "shan't", "she", "she'd", "she'll", "she's", "should", "shouldn't", "so", "some", "such", 
-    "than", "that", "that's", "the", "their", "theirs", "them", "themselves", "then", "there", "there's", "these", "they", 
-    "they'd", "they'll", "they're", "they've", "this", "those", "through", "to", "too", 
-    "under", "until", "up", 
-    "very", 
-    "was", "wasn't", "we", "we'd", "we'll", "we're", "we've", "were", "weren't", "what", "what's", "when", "when's", 
-    "where", "where's", "which", "while", "who", "who's", "whom", "why", "why's", "will", "with", "won't", "would", "wouldn't",
-    "you", "you'd", "you'll", "you're", "you've", "your", "yours", "yourself", "yourselves",
-    "get", "got", "want", "need", "like", "show", "tell", "give", "recipe", "cook","garam"
+    "me", "more", "most", "mustn't", "my", "myself",
+    "no", "nor", "not", "now",
+    "of", "off", "on", "once", "only", "or", "other", "ought",
+    "our", "ours", "ourselves", "out", "over", "own",
+    "same", "shall", "shan't", "she", "she'd", "she'll", "she's",
+    "should", "shouldn't", "so", "some", "such",
+    "than", "that", "that's", "the", "their", "theirs", "them", "themselves",
+    "then", "there", "there's", "these", "they", "they'd", "they'll",
+    "they're", "they've", "this", "those", "through", "to", "too",
+    "under", "until", "up",
+    "very",
+    "was", "wasn't", "we", "we'd", "we'll", "we're", "we've", "were",
+    "weren't", "what", "what's", "when", "when's", "where", "where's",
+    "which", "while", "who", "who's", "whom", "why", "why's", "will",
+    "with", "won't", "would", "wouldn't",
+    "you", "you'd", "you'll", "you're", "you've", "your", "yours",
+    "yourself", "yourselves",
+
+    # ── Generic request / filler words ───────────────────────────────────────
+    "get", "got", "want", "need", "like", "show", "tell", "give",
+    "please", "okay", "ok", "sure", "alright", "yeah", "yes", "no",
+    "um", "uh", "er", "hmm",
+
+    # ── Navigation / intent-critical command words ────────────────────────────
+    # These are the words the intent classifier DEPENDS on.  If phonetic
+    # matching replaces "repeat" → "east" or "next" → some ingredient, intent
+    # classification fails completely.
+    "next", "previous", "prev", "back", "forward", "go", "start", "begin",
+    "stop", "pause", "resume", "continue", "restart", "repeat", "again",
+    "skip", "jump", "return",
+
+    # step / ingredient navigation
+    "step", "steps", "ingredient", "ingredients", "section",
+    "first", "last", "beginning", "end", "top",
+
+    # ordinals & cardinals (spoken step numbers)
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen", "twenty",
+    "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
+    "ninth", "tenth",
+
+    # confirmation / cancellation
+    "confirm", "cancel", "yes", "no", "nope", "nah",
+
+    # help / small-talk triggers
+    "help", "hello", "hi", "hey", "bye", "goodbye", "thanks", "thank",
+
+    # recipe-domain generic verbs (too short/common for reliable matching)
+    "make", "cook", "prepare", "find", "search",
+    "add", "mix", "stir", "heat", "boil", "fry", "bake", "chop", "cut",
+    "serve", "pour", "cover", "remove", "place", "put", "use",
+
+    # misc tokens that confuse phonetic matching
+    "recipe", "dish", "food", "meal", "garam",
+    "how", "what", "which", "when", "where", "why",
+    "do", "did", "does", "done",
+    "time", "long", "much", "many", "hot", "cold",
 }
 
 

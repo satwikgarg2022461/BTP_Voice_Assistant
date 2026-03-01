@@ -12,6 +12,7 @@ class Intent(Enum):
     NAV_PREV = "nav_prev"
     NAV_GO_TO = "nav_go_to"
     NAV_REPEAT = "nav_repeat"
+    NAV_REPEAT_INGREDIENTS = "nav_repeat_ingredients"
     NAV_START = "nav_start"
     QUESTION = "question"
     SEARCH_RECIPE = "search_recipe"
@@ -94,7 +95,7 @@ class IntentClassifier:
                 {"pattern": r"\b(skip|move forward)\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
             ],
             Intent.NAV_PREV: [
-                {"pattern": r"\b(previous|back|before|earlier|go back|last step)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(previous|back|before|earlier|go back|last step)(?!.*(ingredient))\b", "confidence": self.CONFIDENCE_VERY_HIGH},
                 {"pattern": r"\b(what was (that|the last)|can you repeat|say that again)\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
                 {"pattern": r"\b(undo|rewind)\b", "confidence": self.CONFIDENCE_MEDIUM},
             ],
@@ -103,15 +104,22 @@ class IntentClassifier:
                 {"pattern": r"\b(step|ingredient)?\s*(\d+|first|last)\b", "confidence": self.CONFIDENCE_LOW},
             ],
             Intent.NAV_START: [
-                {"pattern": r"\b(repeat|start|begin).*(from )?(the )?(beginning|start|top|starting)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
-                {"pattern": r"\b(start|begin|let'?s (start|begin|go)|show me how)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
-                {"pattern": r"\b(from the (beginning|start|top)|take me through)\b", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(repeat|start|begin|go).*(from )?(the )?(beginning|start|top|starting)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(from the (beginning|start|top)|take me through (the )?recipe)\b", "confidence": self.CONFIDENCE_HIGH},
                 {"pattern": r"\b(restart|start over|begin again)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
             ],
             Intent.NAV_REPEAT: [
-                {"pattern": r"\b(repeat|say (that|it) again|one more time|again|pardon)(?!.*(beginning|start|top|starting))\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(repeat|say|read).*(previous|last|that|current|this)\s*(step|one)?\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(repeat|say (that|it) again|one more time|again|pardon)(?!.*(beginning|start|top|starting|ingredient))\b", "confidence": self.CONFIDENCE_VERY_HIGH},
                 {"pattern": r"\b(what did you say|didn'?t (catch|hear) that)\b", "confidence": self.CONFIDENCE_HIGH},
                 {"pattern": r"\b(come again|excuse me)\b", "confidence": self.CONFIDENCE_MEDIUM_LOW},
+            ],
+            Intent.NAV_REPEAT_INGREDIENTS: [
+                {"pattern": r"\b(repeat|say|read|tell me|show me|list).*(ingredient|ingredients)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(ingredient|ingredients).*(again|once more|repeat|list)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(what (are|were) the ingredients|what do i need|what'?s (needed|required))\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(go (back |over )?(to |through )?the ingredients?)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(ingredients? (list|section|part)|list (of |all )?ingredients?)\b", "confidence": self.CONFIDENCE_HIGH},
             ],
             Intent.SMALL_TALK: [
                 {"pattern": r"\b(hi|hello|hey|good (morning|afternoon|evening)|greetings)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
@@ -134,9 +142,11 @@ class IntentClassifier:
                 {"pattern": r"\b(cook|make|prepare)\s+\w+", "confidence": self.CONFIDENCE_LOW},
             ],
             Intent.START_RECIPE: [
-                {"pattern": r"\b(start|begin|let'?s (do|make|cook)) (this|that|it|the recipe)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
-                {"pattern": r"\b(okay let'?s go|let'?s start cooking|ready to cook)\b", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(start|begin|let'?s (do|make|cook|start|begin)) (this|that|it|the recipe|cooking)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(start cooking|begin cooking|let'?s cook|let'?s start cooking|let'?s go)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(okay let'?s go|ready to cook|i'?m ready)\b", "confidence": self.CONFIDENCE_HIGH},
                 {"pattern": r"\b(show me (the |how to )?steps|walk me through)\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
+                {"pattern": r"^(start|begin|go)$", "confidence": self.CONFIDENCE_HIGH},
             ],
             Intent.STOP_PAUSE: [
                 {"pattern": r"\b(stop|pause|wait|hold on|hang on)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
@@ -363,6 +373,7 @@ Available Intents:
 - nav_prev: User wants to go back to previous step/ingredient
 - nav_go_to: User wants to jump to a specific step/ingredient
 - nav_repeat: User wants to hear the current step again
+- nav_repeat_ingredients: User wants to hear the full ingredients list again
 - nav_start: User wants to start from the beginning
 - question: User is asking a question about the recipe
 - search_recipe: User wants to find/search for a recipe
@@ -445,6 +456,7 @@ Extract relevant entities (e.g., step numbers, recipe names, question text) in t
             Intent.NAV_PREV: "Navigate to previous step/ingredient",
             Intent.NAV_GO_TO: "Jump to specific step/ingredient",
             Intent.NAV_REPEAT: "Repeat current step",
+            Intent.NAV_REPEAT_INGREDIENTS: "Repeat the ingredients list",
             Intent.NAV_START: "Start from beginning",
             Intent.QUESTION: "Ask a question about the recipe",
             Intent.SEARCH_RECIPE: "Search for a recipe",
@@ -471,6 +483,10 @@ def test_intent_classifier():
         ("go back", None),
         ("what's the third step?", {"current_state": "RECIPE_ACTIVE"}),
         ("repeat that", {"current_state": "READING_STEPS"}),
+        ("repeat the ingredients", {"current_state": "READING_STEPS"}),
+        ("what are the ingredients again?", {"current_state": "READING_STEPS"}),
+        ("tell me the ingredients list", None),
+        ("go back to the ingredients", {"current_state": "READING_STEPS"}),
         ("how do I make pasta?", None),
         ("start cooking", {"current_state": "RECIPE_SELECTED"}),
         ("pause", None),

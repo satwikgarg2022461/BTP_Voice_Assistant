@@ -27,7 +27,8 @@ class RecipeLLM:
         self.model_name = model_name
         
     def generate_recipe_response(self, user_query: str, recipe_results: List[Dict],
-                                 return_json: bool = True) -> Union[Dict, str]:
+                                 return_json: bool = True,
+                                 conversation_history: Optional[List[Dict]] = None) -> Union[Dict, str]:
         """
         Generate a structured JSON response with recipe details for TTS and tracking
 

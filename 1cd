@@ -1,0 +1,4 @@
+wc: /tmp/ic_test.txtwc: /tmp/ic_test.txt: No such file or directory
+: No such file or directory
+wc: /home/satwik/BTech/Sem7/BTP_Voice_Assistantwc: /home/satwik/BTech/Sem7/BTP_Voice_Assistant: Is a directory
+: Is a directory
