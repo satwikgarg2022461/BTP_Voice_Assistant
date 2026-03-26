@@ -34,8 +34,10 @@ Interrupt contract
 
 import os
 import sys
+import time
 import argparse
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 
@@ -51,11 +53,22 @@ from modules.navigator       import RecipeNavigator
 from modules.session_manager import SessionManager
 from modules.retriever       import RecipeRetriever
 from modules.llm             import RecipeLLM
-from modules.tts             import RecipeTTS
+from modules.tts             import RecipeTTS, SarvamTTS, get_tts_engine
 from modules.audio_player    import ChunkedAudioPlayer, AudioPlayer
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+
+@contextmanager
+def _timer(label: str, store: dict | None = None):
+    """Context-manager that prints elapsed time for *label* and optionally
+    stores the duration (seconds) in *store[label]*."""
+    t0 = time.perf_counter()
+    yield
+    elapsed = time.perf_counter() - t0
+    print(f"[⏱  {label}] {elapsed * 1000:.1f} ms")
+    if store is not None:
+        store[label] = elapsed
 
 class VoiceAssistant:
     """
@@ -86,6 +99,8 @@ class VoiceAssistant:
         collection_name = "recipes_collection",
         food_dict_path  = "data/food_dictionary.csv",
         fuzzy_score_cutoff = 70,
+        tts_provider    = "deepgram",  # "deepgram" or "sarvam"
+        autocorrect     = True,        # set False to skip fuzzy ASR correction
     ):
         print("=" * 60)
         print("  Initialising Voice Assistant")
@@ -112,8 +127,8 @@ class VoiceAssistant:
             sample_rate=16000,
             frame_length=512,
             pre_roll_secs=1.0,
-            silence_thresh=500,
-            silence_duration=2.0,
+            silence_thresh=1000,
+            silence_duration=1.0,
         )
 
         # ── ASR ───────────────────────────────────────────────────────────────
@@ -157,8 +172,8 @@ class VoiceAssistant:
 
         # ── TTS ───────────────────────────────────────────────────────────────
         try:
-            self.tts = RecipeTTS()
-            print("TTS  : OK")
+            self.tts = get_tts_engine(tts_provider)
+            print(f"TTS  : OK ({tts_provider})")
         except Exception as e:
             print(f"TTS  : unavailable ({e})")
             self.tts = None
@@ -170,14 +185,17 @@ class VoiceAssistant:
         self._player_lock  = threading.Lock()
 
         # ── fuzzy-matching vocabulary ────────────────────────────────────────
+        self.autocorrect        = autocorrect
         self.fuzzy_score_cutoff = fuzzy_score_cutoff
         self.recipe_names: list = []
         self.ingredients:  list = []
-        if os.path.exists(food_dict_path):
+        if autocorrect and os.path.exists(food_dict_path):
             self.recipe_names, self.ingredients = \
                 self.asr_corrector.load_recipe_terms(food_dict_path)
             print(f"Vocab : {len(self.recipe_names)} recipes, "
                   f"{len(self.ingredients)} ingredients loaded")
+        elif not autocorrect:
+            print("Vocab : autocorrect disabled — fuzzy matching skipped")
 
         print("\n✓ Voice Assistant ready — say 'Hey Cook' to start!\n")
 
@@ -225,19 +243,23 @@ class VoiceAssistant:
              • no speech / unknown → resume previous audio
         6. For new responses: generate TTS chunks, hand to ChunkedAudioPlayer.
         """
+        timings: dict = {}          # collects step durations for the summary
+        interaction_start = time.perf_counter()
+
         # ── 1. Pause current playback ─────────────────────────────────────
         had_audio = self._pause_playback()
         print("[Main] ▶ Wake word! Audio paused." if had_audio
               else "[Main] ▶ Wake word!")
 
-        # ── 2. Record command ─────────────────────────────────────────────
-        ts_str      = datetime.now().strftime("%Y%m%d_%H%M%S")
-        rec_path    = os.path.join(self.recordings_dir, f"recording_{ts_str}.wav")
-        audio_path  = self.recorder.record_once(rec_path)
+        # ── 2. VAD + Record command ───────────────────────────────────────
+        ts_str   = datetime.now().strftime("%Y%m%d_%H%M%S")
+        rec_path = os.path.join(self.recordings_dir, f"recording_{ts_str}.wav")
+        with _timer("VAD / Recording", timings):
+            audio_path = self.recorder.record_once(rec_path)
         print(f"[Main] Recorded → {audio_path}")
 
         # ── 3. Transcribe ─────────────────────────────────────────────────
-        text = self._transcribe(audio_path, ts_str)
+        text = self._transcribe(audio_path, ts_str, timings)
         if not text:
             print("[Main] No speech detected — resuming previous audio.")
             self._resume_or_pass()
@@ -254,40 +276,55 @@ class VoiceAssistant:
                     "recipe_title":  self._session.get("recipe_title", ""),
                 }
 
-        intent, confidence, entities = self.classifier.classify(text, context)
+        with _timer("Intent Classifier", timings):
+            intent, confidence, entities = self.classifier.classify(text, context)
         print(f"[Main] Intent={intent.value}  conf={confidence:.2f}  "
               f"entities={entities}")
 
         # ── 5. Dispatch ───────────────────────────────────────────────────
-        self._dispatch(intent, text, entities, had_audio)
+        self._dispatch(intent, text, entities, had_audio, timings)
+
+        # ── 6. Timing summary ─────────────────────────────────────────────
+        total = time.perf_counter() - interaction_start
+        print("\n" + "─" * 52)
+        print(f"{'Pipeline Timing Summary':^52}")
+        print("─" * 52)
+        for step, duration in timings.items():
+            print(f"  {step:<30} {duration * 1000:>8.1f} ms")
+        print("─" * 52)
+        print(f"  {'TOTAL':<30} {total * 1000:>8.1f} ms")
+        print("─" * 52 + "\n")
 
     # ─────────────────────────── Dispatch ────────────────────────────────────
 
     def _dispatch(self, intent: Intent, text: str,
-                  entities: dict, had_audio: bool) -> None:
+                  entities: dict, had_audio: bool,
+                  timings: dict | None = None) -> None:
         """Route intent to the correct handler."""
+
+        t = timings if timings is not None else {}
 
         # ── navigation ───────────────────────────────────────────────────
         if intent in (Intent.NAV_NEXT, Intent.NAV_PREV, Intent.NAV_GO_TO,
                       Intent.NAV_REPEAT, Intent.NAV_REPEAT_INGREDIENTS,
                       Intent.NAV_START):
-            self._handle_navigation(intent, entities)
+            self._handle_navigation(intent, entities, t)
 
         # ── recipe search ────────────────────────────────────────────────
         elif intent == Intent.SEARCH_RECIPE:
-            self._handle_recipe_search(text, entities)
+            self._handle_recipe_search(text, entities, t)
 
         # ── start cooking ────────────────────────────────────────────────
         elif intent == Intent.START_RECIPE:
-            self._handle_start_recipe()
+            self._handle_start_recipe(t)
 
         # ── question (RAG + LLM) ─────────────────────────────────────────
         elif intent == Intent.QUESTION:
-            self._handle_question(text)
+            self._handle_question(text, t)
 
         # ── small talk ───────────────────────────────────────────────────
         elif intent == Intent.SMALL_TALK:
-            self._handle_small_talk(text)
+            self._handle_small_talk(text, t)
 
         # ── pause / stop ─────────────────────────────────────────────────
         elif intent == Intent.STOP_PAUSE:
@@ -310,7 +347,8 @@ class VoiceAssistant:
             self._speak_text(
                 "You can say: next step, previous step, repeat, repeat ingredients, "
                 "go to step 3, restart, pause, resume, or ask me any question "
-                "about the recipe."
+                "about the recipe.",
+                t,
             )
 
         # ── unknown / no-op → resume ─────────────────────────────────────
@@ -320,7 +358,8 @@ class VoiceAssistant:
 
     # ──────────────────────── Navigation handlers ────────────────────────────
 
-    def _handle_navigation(self, intent: Intent, entities: dict) -> None:
+    def _handle_navigation(self, intent: Intent, entities: dict,
+                           timings: dict | None = None) -> None:
         """Resolve the nav intent → NavigationResult → speak the text."""
         with self._session_lock:
             session = self._session
@@ -382,17 +421,20 @@ class VoiceAssistant:
 
         # Speak the navigation result
         self._stop_playback()
-        self._speak_text(result.text)
+        self._speak_text(result.text, timings)
 
     # ──────────────────────── Recipe search ──────────────────────────────────
 
-    def _handle_recipe_search(self, text: str, entities: dict) -> None:
+    def _handle_recipe_search(self, text: str, entities: dict,
+                              timings: dict | None = None) -> None:
         """Search for a recipe, create a session, and present ingredients."""
         print("[Main] Searching for recipe…")
 
-        results = self.retriever.search_recipes(text, limit=1)
+        with _timer("RAG / Retrieval", timings):
+            results = self.retriever.search_recipes(text, limit=1)
         if not results:
-            self._speak_text("I couldn't find a matching recipe. Please try again.")
+            self._speak_text("I couldn't find a matching recipe. Please try again.",
+                             timings)
             return
 
         top = results[0]
@@ -402,7 +444,8 @@ class VoiceAssistant:
         recipe_data = self.navigator.load_recipe(recipe_id)
         if recipe_data is None:
             recipe_title = top.get("title", "the recipe")
-            self._speak_text(f"I found {recipe_title} but couldn't load its steps.")
+            self._speak_text(f"I found {recipe_title} but couldn't load its steps.",
+                             timings)
             return
         recipe_title = recipe_data.title
 
@@ -426,11 +469,11 @@ class VoiceAssistant:
             f"Say 'start cooking' to begin, or ask me anything."
         )
         self._stop_playback()
-        self._speak_text(response)
+        self._speak_text(response, timings)
 
     # ──────────────────────── Start recipe ───────────────────────────────────
 
-    def _handle_start_recipe(self) -> None:
+    def _handle_start_recipe(self, timings: dict | None = None) -> None:
         """
         Begin a recipe: read the ingredients list, then immediately move to
         step 1 so the user hears the full recipe flow without an extra command.
@@ -467,11 +510,12 @@ class VoiceAssistant:
         prompt_text = "Say 'Hey Cook, next step' whenever you're ready to continue."
         combined = ingr_result.text + " " + step_result.text + " " + prompt_text
         self._stop_playback()
-        self._speak_text(combined)
+        self._speak_text(combined, timings)
 
     # ──────────────────────── Question (RAG + LLM) ───────────────────────────
 
-    def _handle_question(self, text: str) -> None:
+    def _handle_question(self, text: str,
+                         timings: dict | None = None) -> None:
         """Answer a recipe-related question using retriever + LLM context."""
         if self.llm is None:
             self._speak_text("I can't answer questions right now. The LLM is unavailable.")
@@ -482,7 +526,8 @@ class VoiceAssistant:
             history = (self._session or {}).get("conversation_history", [])
 
         print("[Main] Answering question with RAG+LLM…")
-        results = self.retriever.search_recipes(text, limit=1)
+        with _timer("RAG / Retrieval", timings):
+            results = self.retriever.search_recipes(text, limit=1)
 
         # Build recipe context string for RAG
         recipe_context = ""
@@ -490,16 +535,17 @@ class VoiceAssistant:
             top = results[0]
             recipe_context = top.get("text_preview", top.get("title", ""))
 
-        answer = self.llm.answer_recipe_question(
-            text,
-            recipe_context=recipe_context,
-            conversation_history=history,
-        )
+        with _timer("LLM Generation", timings):
+            answer = self.llm.answer_recipe_question(
+                text,
+                recipe_context=recipe_context,
+                conversation_history=history,
+            )
 
         # If LLM returns structured JSON, extract spoken form
         spoken = self._extract_spoken_text(answer)
         self._stop_playback()
-        self._speak_text(spoken)
+        self._speak_text(spoken, timings)
 
         # Update conversation history
         with self._session_lock:
@@ -513,7 +559,8 @@ class VoiceAssistant:
 
     # ──────────────────────── Small talk ─────────────────────────────────────
 
-    def _handle_small_talk(self, text: str) -> None:
+    def _handle_small_talk(self, text: str,
+                            timings: dict | None = None) -> None:
         """Send small-talk to the LLM and speak the reply."""
         if self.llm is None:
             self._speak_text("I'm your cooking assistant! Let me know when you'd "
@@ -530,14 +577,15 @@ class VoiceAssistant:
                 "paused":          (self._session or {}).get("paused", False),
             }
 
-        answer = self.llm.generate_conversational_response(
-            text, "small_talk",
-            conversation_history=history,
-            context=context,
-        )
+        with _timer("LLM Generation", timings):
+            answer = self.llm.generate_conversational_response(
+                text, "small_talk",
+                conversation_history=history,
+                context=context,
+            )
         spoken = answer if isinstance(answer, str) else self._extract_spoken_text(answer)
         self._stop_playback()
-        self._speak_text(spoken)
+        self._speak_text(spoken, timings)
 
     # ──────────────────────── Confirm / Cancel ───────────────────────────────
 
@@ -581,11 +629,19 @@ class VoiceAssistant:
                 self._player.stop()
                 self._player = None
 
-    def _speak_text(self, text: str) -> None:
+    def _speak_text(self, text: str, timings: dict | None = None) -> None:
         """
         Generate TTS chunks for *text* and start playing them via a new
-        ChunkedAudioPlayer.  Returns immediately; playback runs in the
-        AudioPlayer monitor thread.
+        ChunkedAudioPlayer.
+
+        Streaming model
+        ---------------
+        A background thread calls ``generate_speech_streaming()`` which yields
+        each chunk as soon as the Deepgram API returns it.  The first chunk is
+        fed to the player immediately (user hears audio after ~1 API RTT, not
+        after all chunks finish).  Subsequent chunks are enqueued on-the-fly.
+
+        Returns immediately; both generation and playback run in background threads.
         """
         if not self.tts:
             print(f"[TTS unavailable] {text}")
@@ -595,41 +651,68 @@ class VoiceAssistant:
             return
 
         ts_prefix = datetime.now().strftime("%Y%m%d_%H%M%S")
-        print(f"[Main] TTS generating chunks…")
-        chunks = self.tts.generate_speech_chunks(text, output_prefix=f"response_{ts_prefix}")
+        print(f"[Main] TTS streaming generation started…")
 
-        valid = [c for c in chunks if c.get("audio_path") and not c.get("error")]
-        if not valid:
-            print("[Main] ✗ No valid audio chunks generated.")
-            return
+        # Create player up-front so background thread can call add_chunk on it
+        chunk_start_times: dict[int, float] = {}
 
         with self._player_lock:
-            # Reuse the shared base AudioPlayer
             player = ChunkedAudioPlayer(player=self._base_player)
-            player.set_callbacks(
-                on_chunk_start  = lambda i, c: print(
-                    f"[Audio] ▶ chunk {i+1}/{player.total_chunks}: "
+
+            def _on_chunk_start(i: int, c: dict) -> None:
+                chunk_start_times[i] = time.perf_counter()
+                print(
+                    f"[Audio] ▶ chunk {i+1}: "
                     f"{c['text'][:60]}…"
-                ),
-                on_chunk_end    = lambda i, c: None,
+                )
+
+            def _on_chunk_end(i: int, c: dict) -> None:
+                if i in chunk_start_times:
+                    dur = time.perf_counter() - chunk_start_times[i]
+                    print(f"[⏱  Audio chunk {i+1}] {dur * 1000:.1f} ms")
+
+            player.set_callbacks(
+                on_chunk_start  = _on_chunk_start,
+                on_chunk_end    = _on_chunk_end,
                 on_all_finished = lambda: print("[Audio] ✓ Playback complete."),
             )
-            player.play_chunks(valid)
             self._player = player
+
+        t_stream_start = time.perf_counter()
+        first_chunk_timed = False
+
+        def _stream_and_feed() -> None:
+            nonlocal first_chunk_timed
+            for chunk in self.tts.generate_speech_streaming(
+                text, output_prefix=f"response_{ts_prefix}"
+            ):
+                if not first_chunk_timed:
+                    elapsed = time.perf_counter() - t_stream_start
+                    print(f"[⏱  TTS First Chunk] {elapsed * 1000:.1f} ms")
+                    if timings is not None:
+                        timings["TTS First Chunk"] = elapsed
+                    first_chunk_timed = True
+                player.add_chunk(chunk)
+
+        threading.Thread(target=_stream_and_feed, daemon=True,
+                         name="TTS-StreamFeed").start()
 
     # ─────────────────────────── Helpers ─────────────────────────────────────
 
-    def _transcribe(self, audio_path: str, ts_str: str) -> str:
+    def _transcribe(self, audio_path: str, ts_str: str,
+                    timings: dict | None = None) -> str:
         """Run ASR on *audio_path*, apply fuzzy correction, return clean text."""
         try:
-            result = self.asr.transcribe_audio(audio_path)
-            text   = result.get("text", "").strip()
+            with _timer("Speech-to-Text (ASR)", timings):
+                result = self.asr.transcribe_audio(audio_path)
+            text = result.get("text", "").strip()
 
-            if text and (self.recipe_names or self.ingredients):
-                corrected = self.asr_corrector.correct_asr_text_phonetic(
-                    text, self.recipe_names, self.ingredients,
-                    self.fuzzy_score_cutoff,
-                )
+            if self.autocorrect and text and (self.recipe_names or self.ingredients):
+                with _timer("Auto-Correct (Fuzzy)", timings):
+                    corrected = self.asr_corrector.correct_asr_text_phonetic(
+                        text, self.recipe_names, self.ingredients,
+                        self.fuzzy_score_cutoff,
+                    )
                 if corrected != text:
                     print(f"[ASR] Corrected: '{corrected}'")
                 text = corrected
@@ -697,10 +780,17 @@ if __name__ == "__main__":
                         help="Whisper model size (local ASR only)")
     parser.add_argument("--sensitivity", type=float, default=0.65,
                         help="Wake word detection sensitivity 0–1 (default 0.65)")
+    parser.add_argument("--tts", default="deepgram",
+                        choices=["deepgram", "sarvam"],
+                        help="TTS provider: 'deepgram' (default) or 'sarvam'")
+    parser.add_argument("--no-autocorrect", action="store_true",
+                        help="Disable fuzzy phonetic ASR auto-correction")
     args = parser.parse_args()
 
     VoiceAssistant(
         asr_type        = args.asr_type or "api",
         asr_model       = args.model,
         wake_sensitivity = args.sensitivity,
+        tts_provider    = args.tts,
+        autocorrect     = not args.no_autocorrect,
     ).run()

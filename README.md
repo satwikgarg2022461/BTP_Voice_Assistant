@@ -53,7 +53,6 @@ BTP_Voice_Assistant/
 ### Setup Steps
 
 1. Clone the repository:
-   ```bash
    git clone <repository-url>
    cd BTP_Voice_Assistant
    ```
@@ -64,30 +63,15 @@ BTP_Voice_Assistant/
    conda activate voice-assistant
    ```
 
-3. Add .env file
-
 4. Add the models in the BTP_VOICE_ASSISTANT/models. Link for the models -> https://drive.google.com/drive/folders/1dsdbpFFLysRrCLVCtEo9cCJdg7WuxulV?usp=sharing
-
-
-## Usage
 
 1. Activate the conda environment:
    ```bash
-   conda activate voice-assistant
-   ```
 
 2. Run the voice assistant:
-   ```bash
    python src/main.py
-   ```
 
 3. Say "Hey Cook" to activate the assistant, then speak your query.
-   - The assistant will record your speech
-   - Transcribe the audio
-   - Process your request
-   - Respond with relevant recipe information
-
-4. Press `Ctrl+C` to exit the application.
 
 ## Data Pipeline
 

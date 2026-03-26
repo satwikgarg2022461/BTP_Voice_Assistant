@@ -1,0 +1,359 @@
+BTP Voice Assistant - Knowledge Transfer (KT) Document
+=========================================================
+
+Objective
+---------
+Create a single consolidated reference so a new reviewer can understand how the BTP Voice Assistant works end-to-end, why key design decisions were made, what data formats/contract are used, and how to troubleshoot common failures.
+
+Investigation Log
+------------------
+1. Collected core documentation from repository `*.md` sources (README, architecture, design decisions, algorithms, API reference, schemas, module/data-pipeline READMEs, implementation notes).
+2. Mapped the documentation into a single KT flow: user interaction loop -> component responsibilities -> data/JSON/CSV contracts -> fallbacks and limitations.
+3. Consolidated “how it works” (architecture + data flow) with “why it was chosen” (design decisions) and “how to use/extend” (API reference + schemas).
+
+Architectural Design & Rationale
+---------------------------------
+## System Overview (What the assistant does)
+The assistant is a conversational cooking system that:
+1. Listens for a wake word (“Hey Cook”) continuously.
+2. Records a single user utterance after wake word detection using VAD (silence-based endpointing).
+3. Transcribes speech to text (ASR).
+4. Classifies the user utterance into an intent (navigation, recipe search, Q&A, small talk, control commands, etc.).
+5. Retrieves and navigates recipes (steps + ingredients) or generates conversational answers.
+6. Converts the response to speech (TTS) and plays audio.
+7. Persists session state so the user can continue/recover across turns.
+
+## High-level Interaction Loop (Main idea)
+The runtime is designed as:
+- A background daemon thread for wake word detection (always listening).
+- A main thread that waits for wake word, then records, transcribes, classifies, dispatches, and speaks.
+
+When wake word is detected while audio is playing, the player can be paused so the assistant can respond to the new command quickly. (See: `ARCHITECTURE.md`, `DESIGN_DECISIONS.md`)
+
+## Layered view (for understanding responsibilities)
+This project can be understood as four logical layers:
+1. Driver Layer: Audio input/output and external API clients (Porcupine detection, ASR APIs, TTS APIs, backend recipe API, Milvus client, Redis client).
+2. Session Layer: Persisting progress and conversation history (Upstash Redis with in-memory fallback).
+3. Interaction Layer: Translating structured decisions into spoken/audio output (TTS chunking, audio playback pause/resume).
+4. Logic Layer: Orchestrating the pipeline per turn (intent classification -> dispatch -> response generation -> session updates).
+
+## Key Design Decisions (Why the system is built this way)
+The documentation below reflects the rationale provided in `DESIGN_DECISIONS.md`:
+
+1. Wake word detection: Picovoice Porcupine (local, always-on)
+- Decision: Pre-trained Porcupine model for “Hey Cook”.
+- Why: Low latency, always-on operation without blocking, privacy (audio stays local until ASR).
+- Trade-offs: Vendor dependency and fixed wake word model.
+
+2. ASR: Hybrid Deepgram (primary) + Whisper (fallback)
+- Decision: Deepgram for speed/accuracy; Whisper local for resilience when cloud fails.
+- Why: Deepgram keeps conversational flow responsive; Whisper preserves functionality if Deepgram is unavailable/rate-limited.
+- Trade-offs: Cloud cost/internet dependency vs slower local inference.
+
+3. Intent classification: Rule-based (primary) + Gemini LLM fallback
+- Decision: Regex/rule patterns for common intents; LLM used only when confidence is low.
+- Why: Fast deterministic mapping for most commands; LLM handles edge cases/paraphrases.
+- Trade-offs: Rules need maintenance; LLM adds latency and can be non-deterministic (mitigated by validation/fallbacks).
+
+4. Recipe retrieval: Milvus + SentenceTransformer embeddings
+- Decision: Semantic search using 384-D embeddings (SentenceTransformer `all-MiniLM-L6-v2`) stored/indexed via Milvus.
+- Why: Captures meaning beyond exact keywords (pasta ~ spaghetti ~ noodles).
+- Trade-offs: Setup complexity and dataset scale considerations.
+
+5. LLM choice: Google Gemini 2.5 Flash
+- Decision: Gemini for structured response generation and fallback intent classification.
+- Why: Fast enough for fallback; supports structured outputs (validated and extracted).
+- Trade-offs: API dependency and potential hallucination risk (mitigated by using structured templates + API-provided recipe data).
+
+6. Session storage: Upstash Redis (primary) + in-memory fallback
+- Decision: Persist session state with TTL in Redis; fallback to in-memory dict if Redis is unavailable.
+- Why: Resume after interruption/pause; easy KV model for session state.
+- Trade-offs: Redis adds network/API latency; persistence depends on network availability.
+
+7. TTS: Deepgram TTS
+- Decision: Deepgram for speech synthesis.
+- Why: Natural voice quality; fast enough; consistent vendor integration.
+- Trade-offs: Cloud dependency and usage cost; fallback quality depends on local capabilities (not guaranteed in docs).
+
+8. Audio playback: concurrent playback with pause/resume
+- Decision: Use a chunked player with background audio handling so wake word detection remains responsive.
+- Why: Users may interrupt (“next step”) while the assistant is speaking.
+- Trade-offs: Thread/synchronization complexity.
+
+9. Data format: CSV for recipe navigation data
+- Decision: Use CSV files for recipe chunks and ingredient lookup.
+- Why: Simplicity, version-control friendly, sufficient for read-heavy static datasets.
+- Trade-offs: Not ideal for large-scale updates; relies on offline regeneration and consistent chunking.
+
+Implementation & Rationale
+---------------------------
+## End-to-end Pipeline (per user turn)
+The typical sequence (from `ARCHITECTURE.md` and `API_REFERENCE.md`):
+1. Wake word detection
+   - Triggered in background by `WakeWordDetector`.
+2. Recording (VAD endpointing)
+   - `ShortRecorder.record_once()` captures audio using RMS threshold + silence duration.
+3. ASR transcription
+   - Primary: Deepgram transcription to text.
+   - Fallback: Whisper transcription locally if Deepgram is unavailable.
+4. Intent classification
+   - Rule-based patterns attempt classification first.
+   - If rule confidence < threshold, optionally call Gemini LLM fallback.
+   - Returns: `(Intent, confidence, entities)`.
+5. Dispatch to intent handler
+   - `SEARCH_RECIPE` -> `RecipeRetriever`
+   - `NAV_*` -> `RecipeNavigator`
+   - `QUESTION` / `SMALL_TALK` / other -> `RecipeLLM`
+6. Response generation
+   - For recipes: structured JSON response (greeting, ingredients with `spoken`, steps with `spoken`, closing).
+   - For non-recipe intents: short conversational plain text response suitable for TTS.
+7. Session persistence
+   - Store/update current navigation position and response structure.
+   - Add conversation history entries.
+8. TTS synthesis
+   - Split text into sentence-sized chunks and synthesize speech.
+9. Audio playback
+   - Play audio chunks concurrently with continued wake word listening.
+
+## Component Responsibilities
+### 1. Wake Word Detection (`modules/wakeword.py`)
+- What it does: always-on detection of “Hey Cook”.
+- How it works (as documented): Porcupine processes PCM frames in a daemon thread and signals detection via an internal event/flag.
+- Key tuning:
+  - Sensitivity (0-1 scale) affects false positives vs missed detections.
+  - Pre-roll audio helps ensure the beginning of speech is captured after wake word.
+
+### 2. Voice Activity Detection + Recording (`modules/vad.py`)
+- What it does: captures a single utterance using RMS-based silence endpointing.
+- How it works (as documented in `ALGORITHMS.md`):
+  - Fill a pre-roll buffer (captures audio prior to speaking).
+  - Record frames while energy stays above threshold.
+  - Stop after `silence_duration` worth of consecutive frames have RMS energy below `silence_thresh`.
+- Output contract:
+  - Saves a mono PCM WAV file at 16 kHz (per schema/spec).
+
+### 3. ASR (Deepgram primary, Whisper fallback)
+- What it does: transcribes WAV to a lowercased plain text string.
+- Why hybrid:
+  - Deepgram optimizes latency and accuracy.
+  - Whisper fallback maintains resilience when cloud calls fail.
+- Output contract:
+  - Stored transcription files go into `ASR_text/` as plain text lines (one-line lowercased transcript).
+
+### 4. Intent Classification (`modules/intent_classifier.py`)
+- What it does: maps transcription text to one of the supported `Intent` values.
+- How it works:
+  1. Rule-based regex patterns:
+     - Fast evaluation, explains why an intent matched.
+     - Produces `(intent, confidence, entities)`.
+  2. Confidence threshold:
+     - If below configured `confidence_threshold`, call Gemini LLM fallback (optional).
+  3. Context boost:
+     - If user continues the same intent, confidence can be slightly boosted (to reduce repeated disambiguation).
+- Output contract:
+  - Tuple: `(Intent enum, float confidence, Dict entities)`
+
+### 5. Recipe Retrieval (`modules/retriever.py`)
+- What it does: finds relevant recipes using semantic search.
+- How it works:
+  - Query embedding generated via SentenceTransformer (`all-MiniLM-L6-v2`) -> 384-D vector.
+  - Milvus vector search returns top-K recipe candidates (cosine similarity).
+  - Fetch full recipe details from backend API using the selected recipe_id.
+- Output contract:
+  - A list of dicts including `recipe_id`, `title`, `similarity_score`, and `metadata`.
+
+### 6. Recipe Navigation (`modules/navigator.py`)
+- What it does: converts a recipe and current session state into the next spoken instruction or ingredient list.
+- Data sources:
+  - `data/chunks.csv` drives navigation across chunks.
+  - `data/food_dictionary.csv` supports ingredient listing.
+- Navigation state:
+  - `step_index`: global step number (0 means ingredients).
+  - `chunk_index`: chunk number (1-based).
+- Return contract:
+  - `NavigationResult` with `success`, `intent`, `step_index`, `chunk_index`, `text`, `section`, flags like `is_last_step`.
+
+### 7. Response Generation & Structured JSON (`modules/llm.py`)
+- What it does: generate either:
+  - Recipe responses as structured JSON (for step-by-step tracking and TTS chunking), or
+  - Non-recipe conversational strings for small talk / Q&A.
+
+#### Recipe Response JSON contract
+When `return_json=True`, a structured response is expected to have:
+- `greeting`: string
+- `ingredients`: list of objects `{ "text": string, "spoken": bool }`
+- `steps`: list of objects `{ "step_num": int, "text": string, "spoken": bool }`
+- `closing`: string
+
+Validation & fallback behavior (from `IMPLEMENTATION_NOTES.md` + API docs):
+- Primary attempt: ask LLM for valid JSON.
+- If invalid JSON:
+  - Extract JSON from markdown code blocks if LLM wrapped output in ```json ... ```.
+- If still invalid:
+  - Manually construct a structured response from available recipe data (tertiary fallback).
+
+#### Why structured JSON?
+- It enables consistent “what to speak next” logic (and progress tracking) rather than relying on free-form text parsing.
+
+### 8. Session State (`modules/session_manager.py`)
+- What it does: persist session state to allow resume and multi-turn behavior.
+- Primary backend: Upstash Redis with TTL (documented default: 3600 seconds).
+- Fallback: in-memory dict if Redis is unavailable.
+- Stored fields (from schemas):
+  - Recipe identity: `recipe_id`, `recipe_title`
+  - Navigation position: `current_step`, `current_chunk`
+  - `response_structure` (LLM structured JSON)
+  - `ingredients_spoken`, `steps_spoken` trackers
+  - `conversation_history` and optional user preference metadata.
+
+### 9. Text-to-Speech (`modules/tts.py`)
+- What it does: convert response text into audio using Deepgram TTS.
+- How it works:
+  - Splits long text into chunks (sentence-friendly) before calling the API.
+  - Generates MP3 output (or returns an audio path / bytes per implementation).
+
+### 10. Audio Playback (`modules/audio_player.py`)
+- What it does: plays synthesized audio while wake word detection continues running in background.
+- Why chunked/concurrent:
+  - Allows pause/resume and interruption so new commands can interrupt current speech.
+
+### 11. API Reference Quick Map (key interfaces)
+The following method/class names are the primary “entry points” for integration and debugging (from `API_REFERENCE.md`):
+
+1. `WakeWordDetector` (wake word)
+   - `start()`, `is_detected()`, `wait_for_detected(timeout)`, `stop()`
+2. `ShortRecorder` (VAD + recording)
+   - `rms(pcm)`, `record_once(out_path="temp.wav")`
+3. `IntentClassifier`
+   - `classify(text, context=None) -> (Intent, confidence, entities)`
+4. `RecipeRetriever` (semantic retrieval)
+   - `embed_query(query_text)`, `search_recipes(query_text, top_k=5)`, `fetch_full_recipe_details(recipe_id)`
+5. `RecipeNavigator` (step navigation)
+   - `load_recipe(recipe_id)`, `get_current_step(session)`, `get_next_step(session)`, `get_previous_step(session)`,
+     `jump_to_step(session, target_step)`, `get_current_ingredients(session)`, `restart(session)`
+6. `RecipeLLM` (response generation)
+   - `generate_recipe_response(user_query, recipe_results, return_json=True, conversation_history=None)`
+   - `generate_conversational_response(user_query, current_recipe=None, session_context=None, conversation_history=None)`
+   - `answer_recipe_question(question, recipe_context, conversation_history=None)`
+7. `SessionManager`
+   - `create_session(...)`, `get_session(session_id)`, `update_session(session_id, updates)`,
+     `add_to_history(session_id, role, content)`, `get_history(session_id, limit=10)`
+8. `RecipeTTS`
+   - `generate_speech(text, output_file=None)`, `split_into_chunks(text, max_chunk_length=300)`
+9. `ChunkedAudioPlayer`
+   - `play_chunks(mp3_chunks)`, `pause()`, `resume()`, `stop()`
+
+## Data Contracts & Schemas (What must match)
+This project relies on explicit contracts. The following are the most important ones from `SCHEMAS.md`:
+
+### ASR output
+- Deepgram listens return JSON, but the stored representation in `ASR_text/` is:
+  - plain text, one line, lowercased.
+
+### Intent classification output
+- `(Intent, confidence, entities)` tuple.
+- Entities are intent-dependent (e.g., `target_step` for navigation, `ingredient` for substitution questions).
+
+### LLM structured recipe response (RecipeLLM)
+- Must include keys: `greeting`, `ingredients`, `steps`, `closing`.
+- Validation rules:
+  - ingredients list items must contain `text`
+  - steps list items must contain `step_num` and `text`
+  - “spoken” is initially false.
+
+### NavigationResult (navigator)
+- Contains: `success`, `intent`, `step_index`, `chunk_index`, `text`, `section`, `is_last_step`, etc.
+
+### CSV formats for navigation
+- `data/chunks.csv`:
+  - includes chunk step ranges (`start_step`, `end_step`) and chunk text for navigation.
+- `data/recipes.csv`, `data/food_dictionary.csv`:
+  - support recipe metadata and ingredient lookup.
+
+### Environment variables
+Key required configuration is documented in `SCHEMAS.md` and used by components:
+- `DEEPGRAM_API_KEY`
+- `Gemini_API_key`
+- `API_BASE_URL`
+- `REDIS_URL` (optional, used if configured)
+
+Capabilities & Limitations
+--------------------------
+## Capabilities
+1. Always-on “Hey Cook” wake word detection (local on device).
+2. Single-utterance recording using RMS-based VAD endpointing.
+3. Speech-to-text with a resilient ASR pipeline (Deepgram primary, Whisper fallback).
+4. Hybrid intent classification (rules first, LLM fallback when uncertain).
+5. Semantic recipe retrieval using Milvus embeddings.
+6. Step-by-step navigation over pre-chunked recipe CSV data.
+7. Recipe responses as structured JSON, enabling progress tracking and deterministic navigation.
+8. Session persistence with resume behavior (Redis TTL; fallback in-memory).
+9. Speech output with chunked TTS and concurrent playback for interruption.
+
+## Limitations
+1. VAD tuning is environment-dependent
+- Kitchen noise can affect RMS thresholding; the system needs threshold/duration tuning for different environments.
+2. Rule-based intent classification requires maintenance
+- Rules can miss paraphrases and may need updates as interaction style changes.
+3. LLM latency and non-determinism
+- LLM fallback adds delay (by design) and can fail to output valid structured JSON, which is mitigated via extraction + validation + fallback creation.
+4. Cloud dependencies and costs
+- Deepgram ASR/TTS and Gemini calls depend on network connectivity and usage-based costs.
+5. Structured response assumes consistent schema compliance
+- If schema validation fails, fallback strategy determines output quality.
+6. CSV data model is best for static/mostly read-only datasets
+- For frequent updates or very large dynamic datasets, the CSV + regeneration approach may become limiting.
+
+Advanced Techniques
+--------------------
+## Cascading fallbacks (graceful degradation)
+The system is designed to keep functioning even if a component fails:
+1. ASR: Deepgram -> Whisper fallback
+2. Intent classification: rule confidence -> Gemini fallback -> UNKNOWN (if LLM unavailable)
+3. LLM recipe JSON: JSON mode -> extract JSON from markdown -> manual structured construction
+4. Session storage: Redis -> in-memory fallback
+These strategies are documented in `DESIGN_DECISIONS.md`, `API_REFERENCE.md`, and `SCHEMAS.md`.
+
+## Confidence thresholding + context boost
+- Rule-based intent classification uses a confidence threshold so only uncertain cases trigger LLM fallback.
+- Additional confidence boost can be applied when the user continues the same intent across turns.
+
+## Embedding-based retrieval with cosine similarity
+- SentenceTransformer embeddings + Milvus nearest neighbor search uses cosine similarity to find semantically similar recipes.
+
+## Chunk boundary logic (recipe navigation)
+- Recipes are divided into chunks based on steps to make navigation coherent.
+- Chunk boundaries aim to respect natural breaks rather than splitting mid-instruction.
+
+## TTS-friendly chunking
+- Long text responses are split into chunks based on sentence boundaries to optimize TTS latency and intelligibility.
+
+Troubleshooting & Incident Log
+-------------------------------
+## Troubleshooting (pre-documented mitigations)
+1. “No audio response” or repeated failures
+- Check whether Deepgram API credentials (`DEEPGRAM_API_KEY`) are configured and network access is available.
+2. “Can’t classify intent correctly”
+- Ensure `confidence_threshold` is appropriate; if too high, LLM fallback might be overused, causing latency.
+3. “LLM recipe output is missing fields”
+- The system attempts JSON extraction and schema validation; if validation fails, it uses a manual structured response fallback.
+4. “Session doesn’t resume”
+- If Redis is unreachable/unconfigured, session will fall back to in-memory and will not persist across restarts.
+5. “VAD cuts off speech too early”
+- Increase `silence_duration` or adjust `silence_thresh` to tolerate kitchen noise.
+
+## Incident Log
+No runtime incidents (with exact error messages and resolution steps) are recorded in the current documentation set.
+If an error occurs during execution, append it here following the incident template used in this project’s documentation style.
+
+Appendix: Source Mapping (Where each topic came from)
+-------------------------------------------------------
+- System overview & data flow: `ARCHITECTURE.md`, `README.md`
+- Design rationale & trade-offs: `DESIGN_DECISIONS.md`
+- Algorithms (VAD, intent classification, embeddings, navigation): `ALGORITHMS.md`
+- Module summaries (what each module does): `modules/README.md`
+- Data pipeline overview: `data_pipeline/README.md`
+- API contracts for module methods/classes: `API_REFERENCE.md`
+- Data schemas (ASR/intent/navigation/LLM/session/CSV/env vars): `SCHEMAS.md`
+- LLM structured JSON behavior notes: `IMPLEMENTATION_NOTES.md`
+
