@@ -89,6 +89,6 @@ class ShortRecorder:
 if __name__ == "__main__":
     recorder = ShortRecorder(sample_rate=16000, frame_length=512,
                              pre_roll_secs=1.0, silence_thresh=500,
-                             silence_duration=3.0)
+                             silence_duration=0.5)
     file_path = recorder.record_once("voice_recordings/temp.wav")
     print("Pass this file to ASR:", file_path)

@@ -419,6 +419,34 @@ class ChunkedAudioPlayer:
         """Resume the currently paused chunk."""
         return self._player.resume()
 
+    def add_chunk(self, chunk: Dict) -> None:
+        """
+        Append *chunk* to the live queue.
+
+        If the player is currently idle (all previously queued chunks have
+        finished playing), playback is restarted immediately on this chunk.
+        Safe to call from any thread while playback is ongoing.
+
+        Args:
+            chunk (Dict): Must have at least ``{"audio_path": "...", "text": "..."}``.
+                          Chunks with ``error=True`` or missing ``audio_path`` are
+                          silently ignored.
+        """
+        if not chunk.get("audio_path") or chunk.get("error"):
+            return
+        with self._playing_lock:
+            if self._stop_requested:
+                return
+            self._chunks.append(chunk)
+            new_index = len(self._chunks) - 1
+            # Kick off playback only if the player is sitting idle
+            should_start = self._player.state in (
+                PlayerState.IDLE, PlayerState.STOPPED, PlayerState.FINISHED
+            ) and self._current_index < new_index
+
+        if should_start:
+            self._play_index(new_index)
+
     def stop(self) -> bool:
         """Stop playback and clear the chunk queue."""
         with self._playing_lock:
