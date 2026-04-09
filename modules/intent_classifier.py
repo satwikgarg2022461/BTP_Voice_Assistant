@@ -72,7 +72,7 @@ class IntentClassifier:
             api_key = os.getenv("Gemini_API_key")
             if api_key:
                 self.client = genai.Client(api_key=api_key)
-                self.model_name = "gemini-2.5-flash"
+                self.model_name = "gemini-3.1-flash-lite-preview"
                 print("Intent Classifier initialized with LLM fallback")
             else:
                 print("Warning: Gemini API key not found. LLM fallback disabled.")

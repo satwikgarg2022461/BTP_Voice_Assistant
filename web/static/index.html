@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hey Cook — Voice Assistant</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+  <!-- ─── Sidebar ─────────────────────────────────────────────── -->
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a5 5 0 0 1 5 5v3H7V7a5 5 0 0 1 5-5z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg>
+        <span>Hey Cook</span>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <h3>Recipe</h3>
+      <p id="sidebar-recipe" class="sidebar-value">No recipe loaded</p>
+    </div>
+
+    <div class="sidebar-section">
+      <h3>Progress</h3>
+      <div id="sidebar-progress" class="progress-bar-wrap">
+        <div class="progress-bar" style="width: 0%"></div>
+      </div>
+      <p id="sidebar-step" class="sidebar-value">—</p>
+    </div>
+
+    <div class="sidebar-section">
+      <h3>Section</h3>
+      <p id="sidebar-section" class="sidebar-value">—</p>
+    </div>
+
+    <div class="sidebar-footer">
+      <button id="btn-clear" title="Clear conversation">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+        Clear chat
+      </button>
+    </div>
+  </aside>
+
+  <!-- ─── Main area ───────────────────────────────────────────── -->
+  <main id="main">
+    <div id="messages"></div>
+
+    <div id="input-bar">
+      <div id="status-text">Click the microphone and speak</div>
+
+      <button id="btn-mic" aria-label="Record">
+        <svg id="mic-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 1a4 4 0 0 0-4 4v7a4 4 0 0 0 8 0V5a4 4 0 0 0-4-4z"/>
+          <path d="M19 10v1a7 7 0 0 1-14 0v-1"/>
+          <line x1="12" y1="18" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+        <div id="mic-pulse"></div>
+      </button>
+    </div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
