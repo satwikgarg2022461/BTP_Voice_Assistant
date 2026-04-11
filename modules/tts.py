@@ -186,8 +186,7 @@ class RecipeTTS:
             print(f"Audio file saved at: {audio_path}")
             return audio_path, None
 
-    def split_into_sentences(self, text: str, max_length: int = 600,
-                              first_chunk_max_length: int = 0) -> List[str]:
+    def split_into_sentences(self, text: str, max_length: int = 600) -> List[str]:
         """
         Split text into sentences for chunked TTS processing.
 
@@ -200,17 +199,12 @@ class RecipeTTS:
            step descriptions and must stay together for natural TTS output.
 
         2. For sentences that still exceed max_length after step 1,
-           split only on "; " boundaries as a last resort.
-
-        3. If *first_chunk_max_length* > 0, the very first chunk is further
-           split on commas / dashes so it stays short and TTS-generates fast,
-           giving the user near-instant audio feedback.
+           split on "; " boundaries, then merge comma-separated fragments
+           up to max_length.
 
         Args:
             text (str): Full text to convert to speech.
             max_length (int): Max chars per chunk (default 600).
-            first_chunk_max_length (int): If > 0, cap the first chunk to this
-                many chars by also splitting on commas (default 0 = disabled).
 
         Returns:
             List[str]: Sentence chunks.
@@ -218,12 +212,10 @@ class RecipeTTS:
         if not text or not text.strip():
             return []
 
-        # Primary split: sentence-ending punctuation + whitespace + Capital letter
-        # Also split on newlines. Does NOT split on commas, semicolons, or "and".
         sentence_endings = re.compile(
-            r'(?<=[.!?])\s+(?=[A-Z])'   # ". Next sentence"
-            r'|(?<=[.!?])\s*$'           # trailing punctuation
-            r'|\n+'                       # newlines
+            r'(?<=[.!?])\s+(?=[A-Z])'
+            r'|(?<=[.!?])\s*$'
+            r'|\n+'
         )
 
         raw_sentences = sentence_endings.split(text.strip())
@@ -237,27 +229,25 @@ class RecipeTTS:
             if len(sentence) <= max_length:
                 sentences.append(sentence)
             else:
-                # Hard-split on "; " as last resort only
                 sub_chunks = re.split(r';\s+', sentence)
                 for chunk in sub_chunks:
                     chunk = chunk.strip()
-                    if chunk:
+                    if not chunk:
+                        continue
+                    if len(chunk) <= max_length:
                         sentences.append(chunk)
-
-        # ── First-chunk shortening ────────────────────────────────────────────
-        # If the very first chunk is still too long, split it on commas/dashes
-        # so TTS only needs to synthesize a brief phrase before audio starts.
-        if first_chunk_max_length > 0 and sentences:
-            first = sentences[0]
-            if len(first) > first_chunk_max_length:
-                # Split on ", " or " — " or "! " keeping rest as one piece
-                short_split = re.split(r',\s+|\s+—\s+|!\s+', first, maxsplit=1)
-                if len(short_split) == 2 and short_split[0].strip():
-                    head = short_split[0].strip()
-                    tail = short_split[1].strip()
-                    # Only use the split if head is genuinely short
-                    if len(head) <= first_chunk_max_length:
-                        sentences = [head, tail] + sentences[1:] if tail else [head] + sentences[1:]
+                    else:
+                        parts = [p.strip() for p in re.split(r',\s+', chunk) if p.strip()]
+                        buf = parts[0] if parts else ""
+                        for part in parts[1:]:
+                            candidate = buf + ", " + part
+                            if len(candidate) <= max_length:
+                                buf = candidate
+                            else:
+                                sentences.append(buf[:max_length])
+                                buf = part
+                        if buf:
+                            sentences.append(buf[:max_length])
 
         return sentences
 
@@ -333,70 +323,59 @@ class RecipeTTS:
 
     def generate_speech_streaming(self, text: str, output_prefix: Optional[str] = None) -> Generator[Dict, None, None]:
         """
-        Generate speech chunks as a generator, yielding each chunk as it's ready
-        This allows for progressive playback (play first chunk while generating next)
-
-        Args:
-            text (str): Full text to convert to speech
-            output_prefix (str, optional): Prefix for output filenames
-
-        Yields:
-            Dict: Chunk metadata for each generated audio chunk
+        Yield chunk 0 immediately for low-latency first audio, then generate
+        the remaining chunks in parallel and yield them in order.
         """
-        # Split text into sentences — first chunk capped at 80 chars so
-        # Deepgram only synthesizes a brief phrase before audio begins.
-        sentences = self.split_into_sentences(text, first_chunk_max_length=80)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        sentences = self.split_into_sentences(text)
 
         if not sentences:
             print("No sentences to generate speech for")
             return
 
-        print(f"Streaming TTS for {len(sentences)} sentence chunks")
+        total = len(sentences)
+        print(f"Streaming TTS for {total} sentence chunks")
 
-        # Generate timestamp prefix if not provided
         if output_prefix is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_prefix = f"recipe_stream_{timestamp}"
+            output_prefix = f"recipe_stream_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-        # Generate and yield each chunk sequentially
-        for i, sentence in enumerate(sentences):
-            print(f"\nStreaming chunk {i+1}/{len(sentences)}: {sentence[:60]}...")
-
-            # Generate filename for this chunk (use mp3 for Deepgram)
-            chunk_filename = f"{output_prefix}_chunk{i:03d}.mp3"
-
-            # Generate speech for this chunk
-            audio_path = self.generate_speech(sentence, output_filename=chunk_filename, audio_format="mp3")
-
+        def _make_meta(i, sentence, audio_path):
+            dur = round((len(sentence) / 5 / 150) * 60, 2)
             if audio_path:
-                # Estimate duration
-                words_estimate = len(sentence) / 5
-                duration_estimate = (words_estimate / 150) * 60
+                return {"chunk_index": i, "text": sentence, "audio_path": audio_path,
+                        "played": False, "duration_estimate": dur,
+                        "generated_at": datetime.now().isoformat(), "total_chunks": total}
+            return {"chunk_index": i, "text": sentence, "audio_path": None,
+                    "played": False, "duration_estimate": 0,
+                    "generated_at": datetime.now().isoformat(), "error": True, "total_chunks": total}
 
-                chunk_metadata = {
-                    "chunk_index": i,
-                    "text": sentence,
-                    "audio_path": audio_path,
-                    "played": False,
-                    "duration_estimate": round(duration_estimate, 2),
-                    "generated_at": datetime.now().isoformat(),
-                    "total_chunks": len(sentences)
-                }
+        # --- Chunk 0: generate synchronously for instant playback ---
+        print(f"\nStreaming chunk 1/{total}: {sentences[0][:60]}...")
+        path0 = self.generate_speech(sentences[0], output_filename=f"{output_prefix}_chunk000.mp3", audio_format="mp3")
+        yield _make_meta(0, sentences[0], path0)
 
-                print(f"✓ Yielding chunk {i+1}")
-                yield chunk_metadata
-            else:
-                print(f"✗ Failed to generate chunk {i+1}")
-                yield {
-                    "chunk_index": i,
-                    "text": sentence,
-                    "audio_path": None,
-                    "played": False,
-                    "duration_estimate": 0,
-                    "generated_at": datetime.now().isoformat(),
-                    "error": True,
-                    "total_chunks": len(sentences)
-                }
+        if total == 1:
+            return
+
+        # --- Chunks 1..N: fire in parallel, yield in order ---
+        results: dict = {}
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = {}
+            for i in range(1, total):
+                fn = f"{output_prefix}_chunk{i:03d}.mp3"
+                futures[pool.submit(self.generate_speech, sentences[i], fn, "mp3")] = i
+
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    results[idx] = fut.result()
+                except Exception as e:
+                    print(f"✗ Chunk {idx+1} error: {e}")
+                    results[idx] = None
+
+        for i in range(1, total):
+            yield _make_meta(i, sentences[i], results.get(i))
 
     def generate_structured_speech(self, structured_response: Dict, output_prefix: Optional[str] = None) -> Dict:
         """
@@ -684,8 +663,7 @@ class SarvamTTS:
 
     # ── sentence splitting ────────────────────────────────────────────────────
 
-    def split_into_sentences(self, text: str, max_length: int = 0,
-                              first_chunk_max_length: int = 0) -> List[str]:
+    def split_into_sentences(self, text: str, max_length: int = 0) -> List[str]:
         """
         Same strategy as RecipeTTS.split_into_sentences but defaults
         max_length to SARVAM_CHAR_LIMIT to respect the API constraint.
@@ -713,7 +691,6 @@ class SarvamTTS:
             if len(sentence) <= max_length:
                 sentences.append(sentence)
             else:
-                # First try semicolon splits
                 sub_chunks = re.split(r';\s+', sentence)
                 for chunk in sub_chunks:
                     chunk = chunk.strip()
@@ -722,22 +699,17 @@ class SarvamTTS:
                     if len(chunk) <= max_length:
                         sentences.append(chunk)
                     else:
-                        # Last resort: comma splits
-                        for part in re.split(r',\s+', chunk):
-                            part = part.strip()
-                            if part:
-                                sentences.append(part[:max_length])
-
-        # First-chunk shortening
-        if first_chunk_max_length > 0 and sentences:
-            first = sentences[0]
-            if len(first) > first_chunk_max_length:
-                short_split = re.split(r',\s+|\s+—\s+|!\s+', first, maxsplit=1)
-                if len(short_split) == 2 and short_split[0].strip():
-                    head = short_split[0].strip()
-                    tail = short_split[1].strip()
-                    if len(head) <= first_chunk_max_length:
-                        sentences = ([head, tail] + sentences[1:]) if tail else ([head] + sentences[1:])
+                        parts = [p.strip() for p in re.split(r',\s+', chunk) if p.strip()]
+                        buf = parts[0] if parts else ""
+                        for part in parts[1:]:
+                            candidate = buf + ", " + part
+                            if len(candidate) <= max_length:
+                                buf = candidate
+                            else:
+                                sentences.append(buf[:max_length])
+                                buf = part
+                        if buf:
+                            sentences.append(buf[:max_length])
 
         return sentences
 
@@ -803,50 +775,58 @@ class SarvamTTS:
     def generate_speech_streaming(self, text: str,
                                   output_prefix: Optional[str] = None) -> Generator[Dict, None, None]:
         """
-        Yield each audio chunk as soon as it is ready (sequential generation).
-        Interface identical to RecipeTTS.generate_speech_streaming.
+        Yield chunk 0 immediately for low-latency first audio, then generate
+        the remaining chunks in parallel and yield them in order.
         """
-        sentences = self.split_into_sentences(text, first_chunk_max_length=80)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        sentences = self.split_into_sentences(text)
         if not sentences:
             print("No sentences to generate speech for")
             return
 
-        print(f"Streaming TTS (Sarvam) for {len(sentences)} sentence chunks")
+        total = len(sentences)
+        print(f"Streaming TTS (Sarvam) for {total} sentence chunks")
 
         if output_prefix is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_prefix = f"sarvam_stream_{timestamp}"
+            output_prefix = f"sarvam_stream_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-        for i, sentence in enumerate(sentences):
-            print(f"\nStreaming chunk {i+1}/{len(sentences)}: {sentence[:60]}…")
-            chunk_filename = f"{output_prefix}_chunk{i:03d}.wav"
-            audio_path = self.generate_speech(sentence, output_filename=chunk_filename)
-
-            words_estimate = len(sentence) / 5
-            duration_estimate = round((words_estimate / 150) * 60, 2)
-
+        def _make_meta(i, sentence, audio_path):
+            dur = round((len(sentence) / 5 / 150) * 60, 2)
             if audio_path:
-                yield {
-                    "chunk_index": i,
-                    "text": sentence,
-                    "audio_path": audio_path,
-                    "played": False,
-                    "duration_estimate": duration_estimate,
-                    "generated_at": datetime.now().isoformat(),
-                    "total_chunks": len(sentences),
-                }
-            else:
-                print(f"✗ Failed to generate chunk {i+1}")
-                yield {
-                    "chunk_index": i,
-                    "text": sentence,
-                    "audio_path": None,
-                    "played": False,
-                    "duration_estimate": 0,
-                    "generated_at": datetime.now().isoformat(),
-                    "error": True,
-                    "total_chunks": len(sentences),
-                }
+                return {"chunk_index": i, "text": sentence, "audio_path": audio_path,
+                        "played": False, "duration_estimate": dur,
+                        "generated_at": datetime.now().isoformat(), "total_chunks": total}
+            return {"chunk_index": i, "text": sentence, "audio_path": None,
+                    "played": False, "duration_estimate": 0,
+                    "generated_at": datetime.now().isoformat(), "error": True, "total_chunks": total}
+
+        # --- Chunk 0: generate synchronously for instant playback ---
+        print(f"\nStreaming chunk 1/{total}: {sentences[0][:60]}…")
+        path0 = self.generate_speech(sentences[0], output_filename=f"{output_prefix}_chunk000.wav")
+        yield _make_meta(0, sentences[0], path0)
+
+        if total == 1:
+            return
+
+        # --- Chunks 1..N: fire in parallel, yield in order ---
+        results: dict = {}
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = {}
+            for i in range(1, total):
+                fn = f"{output_prefix}_chunk{i:03d}.wav"
+                futures[pool.submit(self.generate_speech, sentences[i], fn)] = i
+
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    results[idx] = fut.result()
+                except Exception as e:
+                    print(f"✗ Chunk {idx+1} error: {e}")
+                    results[idx] = None
+
+        for i in range(1, total):
+            yield _make_meta(i, sentences[i], results.get(i))
 
     # ── playback tracking helpers (same as RecipeTTS) ─────────────────────────
 

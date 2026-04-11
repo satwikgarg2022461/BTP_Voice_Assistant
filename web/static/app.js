@@ -27,6 +27,9 @@
   let processing     = false;
   let currentAudio   = null;   // currently playing Audio element
   let msgCounter     = 0;
+  let chunkQueue     = [];
+  let isPlayingChunks = false;
+  let activeSSE      = null;
 
   // ─── Welcome message ───────────────────────────────────────
   addMessage("assistant", "Welcome! Click the microphone and say something like \"How do I make pasta?\" to get started.");
@@ -34,6 +37,12 @@
   // ─── Mic button ─────────────────────────────────────────────
   btnMic.addEventListener("click", async () => {
     if (processing) return;
+
+    // Allow interrupting audio playback to start a new recording
+    if (isPlayingChunks || activeSSE) {
+      stopAnyPlayback();
+      finishStreaming();
+    }
 
     if (recording) {
       stopRecording();
@@ -73,6 +82,9 @@
   }
 
   function stopAnyPlayback() {
+    if (activeSSE) { activeSSE.close(); activeSSE = null; }
+    chunkQueue = [];
+    isPlayingChunks = false;
     if (currentAudio) {
       currentAudio.pause();
       currentAudio.currentTime = 0;
@@ -147,7 +159,7 @@
     statusText.textContent = "Processing…";
     statusText.className   = "processing";
 
-    // Convert recorded blob to WAV (16 kHz mono PCM) for Deepgram compatibility
+    // Convert recorded blob to WAV (16 kHz mono PCM) for ASR compatibility
     const recMime = (mediaRecorder && mediaRecorder.mimeType) || "audio/webm";
     const rawBlob = new Blob(audioChunks, { type: recMime });
     console.log("Recorded blob:", rawBlob.size, "bytes,", recMime);
@@ -160,7 +172,6 @@
       wavBlob = rawBlob;
     }
 
-    // Show a thinking bubble
     const thinkingId = addMessage("assistant", "Thinking…", { thinking: true });
 
     const formData = new FormData();
@@ -176,27 +187,84 @@
         addMessage("user", data.transcript);
       }
 
-      addMessage("assistant", data.response, {
-        audioUrl: data.audio_url,
-        intent:   data.intent,
-      });
-
+      addMessage("assistant", data.response, { intent: data.intent });
       updateSidebar(data.sidebar);
 
-      // Auto-play if audio exists
-      if (data.audio_url) {
-        playAudio(data.audio_url);
+      // Unlock mic now — audio playback should not block new commands
+      processing = false;
+      btnMic.classList.remove("processing");
+      statusText.textContent = "Click the microphone and speak";
+      statusText.className   = "";
+
+      // Stream TTS chunks via SSE and play them sequentially
+      if (data.tts_job_id) {
+        streamAndPlayChunks(data.tts_job_id);
       }
     } catch (err) {
       console.error("API error:", err);
       removeMessage(thinkingId);
       addMessage("assistant", "Something went wrong. Please try again.");
-    } finally {
       processing = false;
       btnMic.classList.remove("processing");
       statusText.textContent = "Click the microphone and speak";
       statusText.className   = "";
     }
+  }
+
+  // ─── Streaming TTS playback ───────────────────────────────────
+  // Receives chunk URLs via SSE, queues them, and plays sequentially.
+
+  function streamAndPlayChunks(jobId) {
+    chunkQueue = [];
+    isPlayingChunks = false;
+
+    if (activeSSE) { activeSSE.close(); activeSSE = null; }
+
+    const es = new EventSource(`/api/tts-stream/${jobId}`);
+    activeSSE = es;
+
+    es.addEventListener("chunk", (e) => {
+      const { url } = JSON.parse(e.data);
+      chunkQueue.push(url);
+      if (!isPlayingChunks) playNextChunk();
+    });
+
+    es.addEventListener("done", () => {
+      es.close();
+      activeSSE = null;
+    });
+
+    es.onerror = () => {
+      es.close();
+      activeSSE = null;
+      finishStreaming();
+    };
+  }
+
+  function playNextChunk() {
+    if (chunkQueue.length === 0) {
+      isPlayingChunks = false;
+      if (!activeSSE) finishStreaming();
+      return;
+    }
+
+    isPlayingChunks = true;
+    const url = chunkQueue.shift();
+    const audio = new Audio(url);
+    currentAudio = audio;
+    audio.play().catch((e) => console.warn("Auto-play blocked:", e));
+    audio.addEventListener("ended", () => {
+      currentAudio = null;
+      playNextChunk();
+    });
+    audio.addEventListener("error", () => {
+      currentAudio = null;
+      playNextChunk();
+    });
+  }
+
+  function finishStreaming() {
+    isPlayingChunks = false;
   }
 
   // ─── WAV conversion ─────────────────────────────────────────
