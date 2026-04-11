@@ -8,12 +8,13 @@ the uploaded WAV goes straight to ASR.
 
 import os
 import sys
+import uuid
 import threading
 import tempfile
 from datetime import datetime
 from typing import Optional
 
-from flask import Flask, request, jsonify, send_from_directory, send_file
+from flask import Flask, request, jsonify, send_from_directory, send_file, Response
 
 # Project root on sys.path so `modules.*` imports work
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -42,6 +43,9 @@ SESSION_ID  = "web_user_001"
 os.makedirs(TTS_DIR,    exist_ok=True)
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(ASR_DIR,    exist_ok=True)
+
+# In-flight TTS jobs: job_id -> {"total": N, "chunks": {0: filename, ...}, "done": bool}
+tts_jobs: dict = {}
 
 
 class WebAssistant:
@@ -354,6 +358,28 @@ class WebAssistant:
             return os.path.basename(valid[0]["audio_path"])
         return self._concat_audio(valid, f"web_{ts}_full")
 
+    def start_tts_job(self, text: str, job_id: str):
+        """Generate TTS chunks sequentially in background via the streaming API.
+
+        Each chunk is published to ``tts_jobs[job_id]`` the moment it's ready
+        so the SSE endpoint can push it to the browser immediately.
+        """
+        job = tts_jobs[job_id]
+        if not self.tts or not text.strip():
+            job["done"] = True
+            return
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            for chunk in self.tts.generate_speech_streaming(text, output_prefix=f"web_{ts}"):
+                if chunk.get("audio_path"):
+                    job["chunks"][chunk["chunk_index"]] = os.path.basename(chunk["audio_path"])
+                job["total"] = chunk.get("total_chunks", job["total"])
+        except Exception as e:
+            print(f"[TTS job {job_id}] streaming error: {e}")
+        finally:
+            job["done"] = True
+
     def _concat_audio(self, chunks: list, out_base: str) -> str:
         """Concatenate multiple audio chunk files into one.
 
@@ -418,7 +444,12 @@ def index():
 
 @app.route("/api/process", methods=["POST"])
 def api_process():
-    """Accept an audio file, run the full pipeline, return JSON + audio URL."""
+    """Accept an audio file, run the full pipeline, return JSON immediately.
+
+    TTS generation is kicked off in a background thread; the response includes
+    a ``tts_job_id`` that the client can use with the ``/api/tts-stream/``
+    SSE endpoint to receive chunk URLs as they become available.
+    """
     if "audio" not in request.files:
         return jsonify({"error": "No audio file provided"}), 400
 
@@ -437,22 +468,29 @@ def api_process():
             "response":   "I didn't catch that. Could you try again?",
             "intent":     "unknown",
             "audio_url":  None,
+            "tts_job_id": None,
             "sidebar":    a._sidebar_state(),
         })
 
     # 2. Process (classify + dispatch)
     result = a.process(transcript)
 
-    # 3. Generate TTS audio
-    audio_filename = a.generate_audio(result["text"])
-    audio_url = f"/api/audio/{audio_filename}" if audio_filename else None
+    # 3. Start TTS in background
+    job_id = uuid.uuid4().hex[:12]
+    tts_jobs[job_id] = {"total": 0, "chunks": {}, "done": False}
+    threading.Thread(
+        target=a.start_tts_job,
+        args=(result["text"], job_id),
+        daemon=True,
+    ).start()
 
     return jsonify({
         "transcript": transcript,
         "response":   result["text"],
         "intent":     result["intent"],
         "confidence": result["confidence"],
-        "audio_url":  audio_url,
+        "audio_url":  None,
+        "tts_job_id": job_id,
         "sidebar":    result["sidebar"],
     })
 
@@ -469,6 +507,46 @@ def api_reset():
     except Exception:
         pass
     return jsonify({"ok": True})
+
+
+@app.route("/api/tts-stream/<job_id>")
+def api_tts_stream(job_id):
+    """SSE endpoint that streams TTS chunk URLs in order as they finish.
+
+    Events:
+      - ``chunk``: JSON ``{"index": i, "url": "/api/audio/..."}``
+      - ``done``:  all chunks sent; client should close.
+    """
+    import json, time
+
+    def _generate():
+        job = tts_jobs.get(job_id)
+        if job is None:
+            yield "event: done\ndata: {}\n\n"
+            return
+
+        next_idx = 0
+        while True:
+            if next_idx in job["chunks"]:
+                url = f"/api/audio/{job['chunks'][next_idx]}"
+                yield f"event: chunk\ndata: {json.dumps({'index': next_idx, 'url': url})}\n\n"
+                next_idx += 1
+                continue
+
+            if job["done"]:
+                # Flush any remaining chunks that arrived out of order
+                while next_idx in job["chunks"]:
+                    url = f"/api/audio/{job['chunks'][next_idx]}"
+                    yield f"event: chunk\ndata: {json.dumps({'index': next_idx, 'url': url})}\n\n"
+                    next_idx += 1
+                yield "event: done\ndata: {}\n\n"
+                tts_jobs.pop(job_id, None)
+                return
+
+            time.sleep(0.15)
+
+    return Response(_generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.route("/api/audio/<path:filename>")

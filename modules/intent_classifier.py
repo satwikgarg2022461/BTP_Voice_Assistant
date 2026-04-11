@@ -108,12 +108,6 @@ class IntentClassifier:
                 {"pattern": r"\b(from the (beginning|start|top)|take me through (the )?recipe)\b", "confidence": self.CONFIDENCE_HIGH},
                 {"pattern": r"\b(restart|start over|begin again)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
             ],
-            Intent.NAV_REPEAT: [
-                {"pattern": r"\b(repeat|say|read).*(previous|last|that|current|this)\s*(step|one)?\b", "confidence": self.CONFIDENCE_VERY_HIGH},
-                {"pattern": r"\b(repeat|say (that|it) again|one more time|again|pardon)(?!.*(beginning|start|top|starting|ingredient))\b", "confidence": self.CONFIDENCE_VERY_HIGH},
-                {"pattern": r"\b(what did you say|didn'?t (catch|hear) that)\b", "confidence": self.CONFIDENCE_HIGH},
-                {"pattern": r"\b(come again|excuse me)\b", "confidence": self.CONFIDENCE_MEDIUM_LOW},
-            ],
             Intent.NAV_REPEAT_INGREDIENTS: [
                 {"pattern": r"\b(repeat|say|read|tell me|show me|list).*(ingredient|ingredients)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
                 {"pattern": r"\b(ingredient|ingredients).*(again|once more|repeat|list)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
@@ -121,8 +115,15 @@ class IntentClassifier:
                 {"pattern": r"\b(go (back |over )?(to |through )?the ingredients?)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
                 {"pattern": r"\b(ingredients? (list|section|part)|list (of |all )?ingredients?)\b", "confidence": self.CONFIDENCE_HIGH},
             ],
+            Intent.NAV_REPEAT: [
+                {"pattern": r"\b(repeat|say|read).*(previous|last|that|current|this)\s*(step|one)?\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(repeat|say (that|it) again|one more time|again|pardon)(?!.*(beginning|start|top|starting|ingredient))\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(what did you say|didn'?t (catch|hear) that)\b", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(come again|excuse me)\b", "confidence": self.CONFIDENCE_MEDIUM_LOW},
+            ],
             Intent.SMALL_TALK: [
-                {"pattern": r"\b(hi|hello|hey|good (morning|afternoon|evening)|greetings)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"^\s*(hi|hello|hey|good (morning|afternoon|evening)|greetings)\s*[,!.]*\s*$", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(hi|hello|hey|good (morning|afternoon|evening)|greetings)\b", "confidence": self.CONFIDENCE_LOW},
                 {"pattern": r"\b(how are you|how'?re you|how are u|how r u|how'?s it going|what'?s up)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
                 {"pattern": r"\b(thanks|thank you|bye|goodbye|see you|take care)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
                 {"pattern": r"\b(nice|great|awesome|cool|good job|well done)\b$", "confidence": self.CONFIDENCE_HIGH},
@@ -137,8 +138,8 @@ class IntentClassifier:
                 {"pattern": r"\b(tell me (about|more)|explain|describe).*(recipe|step|ingredient|process)\b", "confidence": self.CONFIDENCE_MEDIUM_HIGH},
             ],
             Intent.SEARCH_RECIPE: [
-                {"pattern": r"\b(find|search|look for|show me|give me|i want|i need) (a |some |the )?(recipe|dish)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
-                {"pattern": r"\b(how (do|to) (make|cook|prepare)|recipe for)\b", "confidence": self.CONFIDENCE_HIGH},
+                {"pattern": r"\b(find|search|look for|show me|give me|tell me|i want|i need) (a |some |the )?(recipe|dish)\b", "confidence": self.CONFIDENCE_VERY_HIGH},
+                {"pattern": r"\b(how (do|to) (make|cook|prepare)|recipe (for|of))\b", "confidence": self.CONFIDENCE_HIGH},
                 {"pattern": r"\b(cook|make|prepare)\s+\w+", "confidence": self.CONFIDENCE_LOW},
             ],
             Intent.START_RECIPE: [
@@ -273,8 +274,9 @@ class IntentClassifier:
         if intent == Intent.SEARCH_RECIPE:
             # Try to extract recipe name after trigger words
             recipe_patterns = [
-                r'(?:recipe for|make|cook|prepare|find|search for|show me)\s+(?:a |an |the |some )?(.+?)(?:\?|$)',
-                r'(?:how to make|how to cook|how to prepare)\s+(?:a |an |the |some )?(.+?)(?:\?|$)',
+                r'(?:recipe (?:for|of))\s+(?:a |an |the |some )?(.+?)(?:\?|$)',
+                r'(?:how to (?:make|cook|prepare))\s+(?:a |an |the |some )?(.+?)(?:\?|$)',
+                r'(?:make|cook|prepare|find|search for|show me|tell me)\s+(?:a |an |the |some )?(?:recipe (?:for|of)\s+)?(.+?)(?:\?|$)',
             ]
             for pattern in recipe_patterns:
                 recipe_match = re.search(pattern, text, re.IGNORECASE)
@@ -320,7 +322,8 @@ class IntentClassifier:
         current_state = context.get("current_state", "IDLE")
 
         # Boost navigation intents when in active recipe
-        if intent in [Intent.NAV_NEXT, Intent.NAV_PREV, Intent.NAV_REPEAT, Intent.NAV_GO_TO]:
+        if intent in [Intent.NAV_NEXT, Intent.NAV_PREV, Intent.NAV_REPEAT,
+                     Intent.NAV_REPEAT_INGREDIENTS, Intent.NAV_GO_TO]:
             if current_state in ["READING_INGREDIENTS", "READING_STEPS", "RECIPE_ACTIVE"]:
                 confidence = min(1.0, confidence + self.CONTEXT_BOOST_MEDIUM)
 
