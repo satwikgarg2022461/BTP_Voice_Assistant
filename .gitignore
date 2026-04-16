@@ -216,3 +216,13 @@ try.py
 output.wav
 sample.wav
 output1.wav
+
+*.tex
+*.sty
+*.cls
+*.log
+*.aux
+*.toc
+*.out
+front
+*.bib
