@@ -22,8 +22,6 @@ conda activate voice-assistant
 Make sure these exist before running:
 
 - `models/Hey-Cook_en_linux_v3_0_0.ppn`
-- `recipes_demo.db`
-- files under `data/`
 
 Model folder reference (project note):  
 https://drive.google.com/drive/folders/1dsdbpFFLysRrCLVCtEo9cCJdg7WuxulV?usp=sharing
@@ -35,7 +33,6 @@ Reference: https://picovoice.ai/docs/porcupine/
 1. Go to Picovoice Console and sign up/login.
 2. Copy your **AccessKey** from the console home page.
 3. Put it in `.env` as `PORCUPINE_ACCESS_KEY`.
-4. (Optional) Train/download your own `.ppn` wake-word model from the Porcupine console and place it in `models/`.
 
 ## 5. Create new Upstash Redis database URL
 
@@ -64,19 +61,22 @@ REDIS_URL="rediss://default:YOUR_UPSTASH_TOKEN@YOUR_UPSTASH_HOST:6379"
 Gemini_API_key="YOUR_GEMINI_KEY"
 Deepgram_API_key="YOUR_DEEPGRAM_KEY"
 
-# Optional if using Sarvam TTS (--tts sarvam)
+# Sarvam TTS (--tts sarvam)
 Sarvam_API_key="YOUR_SARVAM_KEY"
 
-# Optional for API-based full recipe fetch
+# API-based full recipe fetch
 API_BASE_URL="http://<host>:<port>/recipe2-api"
 ```
 
 ## 7. Run the assistant
 
 ```bash
+Run this for data pipeline
+python data_pipeline/main.py
 #for web running
 python web/app.py
 
+# for running the terminal-based assistant
 python src/main.py
 ```
 
