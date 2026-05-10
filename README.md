@@ -12,10 +12,9 @@ Voice-first recipe assistant that listens for **"Hey Cook"**, records speech, de
 2. Configure your `.env` (required keys include `PORCUPINE_ACCESS_KEY` and `REDIS_URL`; see details below).
 3. Ensure required assets exist:
    - `models/Hey-Cook_en_linux_v3_0_0.ppn`
-   - `recipes_demo.db`
-   - data files under `data/`
 4. Run:
    ```bash
+   python data_pipeline/main.py
    python src/main.py
    ```
 
@@ -30,8 +29,7 @@ PORCUPINE_ACCESS_KEY="..."                   # Picovoice Porcupine wake-word aut
 REDIS_URL="rediss://default:<TOKEN>@<HOST>:6379"  # Upstash Redis URL
 Gemini_API_key="..."                         # Gemini (intent + LLM)
 Deepgram_API_key="..."                       # Deepgram (ASR + default TTS)
-API_BASE_URL="http://<host>:<port>/recipe2-api"   # Optional API for full recipe fetch
-# Optional (needed only if using --tts sarvam)
+API_BASE_URL="http://<host>:<port>/recipe2-api"   # API for full recipe fetch
 Sarvam_API_key="..."
 ```
 
@@ -56,6 +54,10 @@ BTP_Voice_Assistant/
 ## Common Run Modes
 
 ```bash
+
+# Before running the command given below
+python data_pipeline/main.py
+
 #for web running
 python web/app.py
 
